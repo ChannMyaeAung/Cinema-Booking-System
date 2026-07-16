@@ -1,6 +1,10 @@
 package booking
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 var (
 	ErrSeatAlreadyBooked = errors.New("seat is already taken")
@@ -13,9 +17,13 @@ type Booking struct{
 	SeatID string 
 	UserID string 
 	Status string 
+	ExpiresAt time.Time
 }
 
 type BookingStore interface{
 	Book(b Booking) (Booking, error)
 	ListBookings(movieID string) []Booking
+
+	Confirm(ctx context.Context, sessionID string, userID string) (Booking, error)
+	Release(ctx context.Context, sessionID string, userID string) error
 }
