@@ -10,9 +10,9 @@ func NewMemoryStore() *MemoryStore{
 	}
 }
 
-func (s *MemoryStore) Book(b Booking) (Booking, error){
+func (s *MemoryStore) Book(b Booking) error{
 	if _, exists := s.bookings[b.SeatID]; exists{
-		return Booking{}, ErrSeatAlreadyBooked
+		return ErrSeatAlreadyBooked
 	}
 
 	// save the booking under this seat ID
@@ -25,7 +25,7 @@ func (s *MemoryStore) Book(b Booking) (Booking, error){
     //    	Status: "confirmed",}
 	// }
 	s.bookings[b.SeatID] = b
-	return b, nil
+	return nil
 }
 
 func (s *MemoryStore) ListBookings(movieID string) []Booking{
