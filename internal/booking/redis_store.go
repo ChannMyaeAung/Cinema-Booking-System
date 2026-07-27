@@ -74,6 +74,8 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 	key := fmt.Sprintf("seat:%s:%s", b.MovieID, b.SeatID)
 
 	b.ID = id
+	b.Status = "held"
+	b.ExpiresAt = now.Add(defaultHoldTTL)
 	val, _ := json.Marshal(b)
 
 	res := s.rdb.SetArgs(ctx, key, val, redis.SetArgs{
@@ -88,14 +90,7 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 
 	s.rdb.Set(ctx, sessionKey(id), key, defaultHoldTTL)
 
-	return Booking{
-		ID: id,
-		MovieID: b.MovieID,
-		SeatID: b.SeatID,
-		UserID: b.UserID,
-		Status:   "held",
-		ExpiresAt: now.Add(defaultHoldTTL),
-	}, nil
+	return b, nil
 }
 
 // parseSession converts the stored JSON payload into a Booking value.
@@ -105,13 +100,7 @@ func parseSession(val string) (Booking, error) {
 		return Booking{}, err
 	}
 
-	return Booking{
-		ID:      data.ID,
-		MovieID: data.MovieID,
-		SeatID:  data.SeatID,
-		UserID:  data.UserID,
-		Status:  data.Status,
-	}, nil
+	return data, nil
 }
 
 // Confirm converts a held session into a permanent booking and removes the TTL.
@@ -127,7 +116,7 @@ func (s *RedisStore) Confirm(ctx context.Context, sessionID string, userID strin
 	session.Status = "confirmed"
 	data := Booking{
 		ID:      session.ID,
-		MovieID: string(session.MovieID),
+		MovieID: session.MovieID,
 		SeatID:  session.SeatID,
 		UserID:  session.UserID,
 		Status:  "confirmed",
@@ -143,11 +132,17 @@ func (s *RedisStore) Confirm(ctx context.Context, sessionID string, userID strin
 func (s *RedisStore) getSession(ctx context.Context, sessionID string, userID string) (Booking, string, error) {
 	sk, err := s.rdb.Get(ctx, sessionKey(sessionID)).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return Booking{}, "", ErrSessionNotFound
+		}
 		return Booking{}, "", err
 	}
 
 	val, err := s.rdb.Get(ctx, sk).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return Booking{}, "", ErrSessionNotFound
+		}
 		return Booking{}, "", err
 	}
 
@@ -155,6 +150,11 @@ func (s *RedisStore) getSession(ctx context.Context, sessionID string, userID st
 	if err != nil {
 		return Booking{}, "", err 
 	}
+
+	if session.UserID != userID {
+		return Booking{}, "", ErrUnauthorized
+	}
+
 	return session, sk, nil
 }
 

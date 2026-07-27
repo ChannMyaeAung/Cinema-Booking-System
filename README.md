@@ -13,26 +13,28 @@ Without any protection, both succeed. Now two people show up for the same seat.
 
 This project follows a simple layered architecture:
 
-- Entrypoint: `cmd/main.go` wires dependencies and starts the application.
-- Domain: `internal/booking/domain.go` defines core entities and storage contracts.
-- Service: `internal/booking/service.go` contains business rules and orchestration.
-- Utilities: `internal/utils/utils.go` contains shared helpers (for example JSON responses).
+- Entrypoint: `cmd/main.go` wires the HTTP server, routes, and dependency setup.
+- Handlers: `internal/booking/handler.go` receives HTTP requests and translates them into service calls.
+- Domain: `internal/booking/domain.go` defines the booking model and the storage contract.
+- Service: `internal/booking/service.go` acts as the application-layer boundary between handlers and storage.
+- Stores: the project currently uses a Redis-backed store for persistence, with other store implementations used for learning and concurrency experiments.
+- Utilities: `internal/utils/utils.go` contains shared response helpers.
 
 The core invariant is: **for a given movie and seat, only one booking can succeed**, even when many users try at the same time.
 
-## Booking Flow (Intended)
+## Booking Flow
 
 1. A user sends a booking request for `movieID + seatID`.
-2. The service validates input and applies booking rules.
-3. The service asks the store to claim the seat atomically.
-4. If the seat is already taken, the request fails.
-5. If free, a booking is persisted and returned.
+2. The handler parses the request and forwards it to the booking service.
+3. The service delegates the operation to the configured store implementation.
+4. If the seat is already taken, the request fails with an already-booked error.
+5. If free, a booking hold is created and returned to the client.
 
 ## Current Status
 
-This repository is currently a scaffold/in-progress implementation:
+The project is now moving beyond a pure scaffold:
 
-- Core domain model and interfaces are defined.
-- Service wiring is started.
-- Concurrency behavior is specified in tests.
-- HTTP/server wiring and concrete store implementation are still to be completed.
+- The HTTP server and booking handlers are wired up.
+- Redis-backed persistence is part of the current flow.
+- The booking service exposes hold/list/confirm/release operations.
+- Concurrency behavior is covered by tests and demonstrated through store implementations.

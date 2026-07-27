@@ -1,41 +1,102 @@
 package booking
 
-type MemoryStore struct{
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type MemoryStore struct {
 	bookings map[string]Booking
+	sessions map[string]string
+	sync.RWMutex
 }
 
-func NewMemoryStore() *MemoryStore{
+func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		bookings: map[string]Booking{},
+		sessions: map[string]string{},
 	}
 }
 
-func (s *MemoryStore) Book(b Booking) error{
-	if _, exists := s.bookings[b.SeatID]; exists{
-		return ErrSeatAlreadyBooked
+func (s *MemoryStore) Book(b Booking) (Booking, error) {
+	s.Lock()
+	defer s.Unlock()
+
+	if _, exists := s.bookings[b.SeatID]; exists {
+		return Booking{}, ErrSeatAlreadyBooked
 	}
 
-	// save the booking under this seat ID
-	// example: {
-	// 	"A1": Booking{
-	// 		ID: "bk_123",
-    //    	MovieID: "movie-1",
-    //    	SeatID: "A1",
-    //    	UserID: "user-9",
-    //    	Status: "confirmed",}
-	// }
+	id := uuid.New().String()
+	b.ID = id
+	b.Status = "held"
+	b.ExpiresAt = time.Now().Add(2 * time.Minute)
+
 	s.bookings[b.SeatID] = b
-	return nil
+	s.sessions[id] = b.SeatID
+
+	return b, nil
 }
 
-func (s *MemoryStore) ListBookings(movieID string) []Booking{
-	var result []Booking
+func (s *MemoryStore) ListBookings(movieID string) []Booking {
+	s.RLock()
+	defer s.RUnlock()
 
-	// iterate over all bookings and filter by movieID
-	for _, b := range s.bookings{
-		if b.MovieID == movieID{
+	var result []Booking
+	for _, b := range s.bookings {
+		if b.MovieID == movieID {
 			result = append(result, b)
 		}
 	}
 	return result
+}
+
+func (s *MemoryStore) Confirm(ctx context.Context, sessionID string, userID string) (Booking, error) {
+	s.Lock()
+	defer s.Unlock()
+
+	seatID, exists := s.sessions[sessionID]
+	if !exists {
+		return Booking{}, ErrSessionNotFound
+	}
+
+	b, exists := s.bookings[seatID]
+	if !exists {
+		return Booking{}, ErrSessionNotFound
+	}
+
+	if b.UserID != userID {
+		return Booking{}, ErrUnauthorized
+	}
+
+	b.Status = "confirmed"
+	s.bookings[seatID] = b
+
+	return b, nil
+}
+
+func (s *MemoryStore) Release(ctx context.Context, sessionID string, userID string) error {
+	s.Lock()
+	defer s.Unlock()
+
+	seatID, exists := s.sessions[sessionID]
+	if !exists {
+		return ErrSessionNotFound
+	}
+
+	b, exists := s.bookings[seatID]
+	if !exists {
+		return ErrSessionNotFound
+	}
+
+	if b.UserID != userID {
+		return ErrUnauthorized
+	}
+
+	delete(s.bookings, seatID)
+	delete(s.sessions, sessionID)
+
+	return nil
 }
