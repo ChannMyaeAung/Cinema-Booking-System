@@ -12,10 +12,16 @@ import (
 )
 
 func TestConcurrentBooking_ExactlyOneWins(t *testing.T) {
-	store := NewRedisStore(adapterredis.NewClient("localhost:6379"))
+	rdb, err := adapterredis.NewClient("localhost:6379")
+	if err != nil {
+		t.Skipf("redis not available, skipping: %v", err)
+	}
+	store := NewRedisStore(rdb)
 	svc := NewService(store)
 
 	const numGoroutines = 100_000 // 100k users trying to book a seat at the same time
+
+	movieID := "test-" + uuid.New().String()
 
 	var (
 		successes atomic.Int64
@@ -28,7 +34,7 @@ func TestConcurrentBooking_ExactlyOneWins(t *testing.T) {
 		go func(userNum int) {
 			defer wg.Done()
 			_, err := svc.Book(Booking{
-				MovieID: "screen-1",
+				MovieID: movieID,
 				SeatID:  "A1",
 				UserID:  uuid.New().String(),
 			})

@@ -16,12 +16,17 @@ import (
 func main() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /movies", listMovies)
+	catalog := booking.NewCatalog(movies)
+	mux.HandleFunc("GET /movies", listMovies(catalog))
 	mux.Handle("GET /", http.FileServer(http.Dir("static")))
 
-	store := booking.NewRedisStore(redis.NewClient("localhost:6379"))
+	rdb, err := redis.NewClient("localhost:6379")
+	if err != nil {
+		log.Fatalf("redis: %v", err)
+	}
+	store := booking.NewRedisStore(rdb)
 	svc := booking.NewService(store)
-	bookingHandler := booking.NewHandler(svc)
+	bookingHandler := booking.NewHandler(svc, catalog)
 
 	mux.HandleFunc("GET /movies/{movieID}/seats", bookingHandler.ListSeats)
 	mux.HandleFunc("POST /movies/{movieID}/seats/{seatID}/hold", bookingHandler.HoldSeat)
@@ -51,20 +56,14 @@ func main() {
 }
 
 // movies contains the sample catalog exposed by the API.
-var movies = []movieResponse{
+var movies = []booking.Movie{
 	{ID: "inception", Title: "Inception", Rows: 5, SeatsPerRow: 8},
 	{ID: "dune", Title: "Dune: Part Two", Rows: 4, SeatsPerRow: 6},
 }
 
 // listMovies returns the available movie catalog as JSON.
-func listMovies(w http.ResponseWriter, r *http.Request) {
-	utils.WriteJSON(w, http.StatusOK, movies)
-}
-
-// movieResponse describes the JSON payload returned for a movie.
-type movieResponse struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Rows        int    `json:"rows"`
-	SeatsPerRow int    `json:"seats_per_row"`
+func listMovies(catalog *booking.Catalog) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		utils.WriteJSON(w, http.StatusOK, catalog.All())
+	}
 }

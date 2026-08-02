@@ -80,7 +80,7 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 
 	res := s.rdb.SetArgs(ctx, key, val, redis.SetArgs{
 		Mode: "NX",
-		TTL: defaultHoldTTL,
+		TTL:  defaultHoldTTL,
 	})
 
 	ok := res.Val() == "OK"
@@ -114,15 +114,9 @@ func (s *RedisStore) Confirm(ctx context.Context, sessionID string, userID strin
 	s.rdb.Persist(ctx, sessionKey(sessionID))
 
 	session.Status = "confirmed"
-	data := Booking{
-		ID:      session.ID,
-		MovieID: session.MovieID,
-		SeatID:  session.SeatID,
-		UserID:  session.UserID,
-		Status:  "confirmed",
-	}
+	session.ExpiresAt = time.Time{}
 
-	val, _ := json.Marshal(data)
+	val, _ := json.Marshal(session)
 	s.rdb.Set(ctx, sk, val, 0)
 
 	return session, nil
@@ -148,7 +142,7 @@ func (s *RedisStore) getSession(ctx context.Context, sessionID string, userID st
 
 	session, err := parseSession(val)
 	if err != nil {
-		return Booking{}, "", err 
+		return Booking{}, "", err
 	}
 
 	if session.UserID != userID {

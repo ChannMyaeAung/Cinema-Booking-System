@@ -10,12 +10,13 @@ import (
 
 // handler exposes booking-related HTTP endpoints.
 type handler struct {
-	svc *Service
+	svc     *Service
+	catalog *Catalog
 }
 
-// NewHandler creates a new booking handler with the supplied service.
-func NewHandler(svc *Service) *handler {
-	return &handler{svc}
+// NewHandler creates a new booking handler with the supplied service and catalog.
+func NewHandler(svc *Service, catalog *Catalog) *handler {
+	return &handler{svc: svc, catalog: catalog}
 }
 
 // holdSeatRequest represents the payload expected for a seat hold request.
@@ -71,25 +72,39 @@ func (h *handler) HoldSeat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ListSeats returns the current seat state for a given movie.
+// ListSeats returns the full seat grid with the current state for each seat.
 func (h *handler) ListSeats(w http.ResponseWriter, r *http.Request) {
 	movieID := r.PathValue("movieID")
 
-	bookings := h.svc.ListBookings(movieID)
+	movie, ok := h.catalog.Get(movieID)
+	if !ok {
+		utils.WriteError(w, http.StatusNotFound, "movie not found")
+		return
+	}
 
-	seats := make([]seatInfo, 0, len(bookings))
-
-	for _, b := range bookings{
-		seats = append(seats, seatInfo{
-			SeatID: b.SeatID,
-			UserID: b.UserID,
-			Booked: true,
+	state := make(map[string]seatInfo)
+	for _, b := range h.svc.ListBookings(movieID) {
+		state[b.SeatID] = seatInfo{
+			SeatID:    b.SeatID,
+			UserID:    b.UserID,
+			Booked:    true,
 			Confirmed: b.Status == "confirmed",
-		})
+		}
+	}
+
+	seats := make([]seatInfo, 0, movie.Rows*movie.SeatsPerRow)
+	for row := 0; row < movie.Rows; row++ {
+		for n := 1; n <= movie.SeatsPerRow; n++ {
+			id := seatLabel(row, n)
+			info, exists := state[id]
+			if !exists {
+				info = seatInfo{SeatID: id}
+			}
+			seats = append(seats, info)
+		}
 	}
 
 	utils.WriteJSON(w, http.StatusOK, seats)
-
 }
 
 // seatInfo describes the booking state for a single seat.
