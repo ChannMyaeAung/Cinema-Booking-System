@@ -8,4 +8,10 @@ export default defineConfig({
     react(),
     babel({ presets: [reactCompilerPreset()] })
   ],
+  server: {
+    proxy: {
+      '/movies': 'http://localhost:8080',
+      '/sessions': 'http://localhost:8080',
+    },
+  },
 })
