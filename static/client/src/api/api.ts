@@ -19,6 +19,8 @@ export interface HoldResponse {
   expires_at: string
 }
 
+export type HoldInfo = HoldResponse
+
 export interface SessionResponse {
   session_id: string
   movie_id: string

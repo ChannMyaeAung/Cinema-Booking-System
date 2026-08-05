@@ -54,57 +54,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [userID]);
 
-  const releaseHold = useCallback(
-    async (hold: ActiveHold) => {
-      try {
-        await api.releaseSession(hold.sessionID, userID);
-      } catch {
-        // The hold may already be gone server-side; clear it locally either way.
-      } finally {
-        setHolds((prev) => prev.filter((h) => h.sessionID !== hold.sessionID));
-      }
-    },
-    [userID],
-  );
+  const addHold = useCallback((hold: ActiveHold) => {
+    setHolds((prev) => [...prev.filter((h) => h.seatID !== hold.seatID), hold]);
+  }, []);
 
-  const holdSeat = useCallback(
-    async (movieID: string, seatID: string) => {
-      const res = await api.holdSeat(movieID, seatID, userID);
-      const hold: ActiveHold = {
-        movieID: res.movie_id,
-        seatID: res.seat_id,
-        sessionID: res.session_id,
-        expiresAt: new Date(res.expires_at).getTime(),
-      };
-      setHolds((prev) => [...prev.filter((h) => h.seatID !== seatID), hold]);
-      return hold;
-    },
-    [userID],
-  );
-
-  const confirmSeat = useCallback(
-    async (hold: ActiveHold) => {
-      const res = await api.confirmSession(hold.sessionID, userID);
-      setHolds((prev) => prev.filter((h) => h.sessionID !== hold.sessionID));
-      return res;
-    },
-    [userID],
-  );
-
-  const discardHold = useCallback((hold: ActiveHold) => {
-    setHolds((prev) => prev.filter((h) => h.sessionID !== hold.sessionID));
+  const removeHold = useCallback((sessionID: string) => {
+    setHolds((prev) => prev.filter((h) => h.sessionID !== sessionID));
   }, []);
 
   const value = useMemo(
-    () => ({
-      userID,
-      activeHolds: holds,
-      holdSeat,
-      confirmSeat,
-      releaseHold,
-      discardHold,
-    }),
-    [userID, holds, holdSeat, confirmSeat, releaseHold, discardHold],
+    () => ({ userID, activeHolds: holds, addHold, removeHold }),
+    [userID, holds, addHold, removeHold],
   );
 
   return (

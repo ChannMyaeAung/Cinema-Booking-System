@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { SessionResponse } from "./api/api";
+import type { HoldInfo } from "./api/api";
 
 export interface ActiveHold {
   movieID: string;
@@ -11,10 +11,8 @@ export interface ActiveHold {
 export interface SessionContextValue {
   userID: string;
   activeHolds: ActiveHold[];
-  holdSeat: (movieID: string, seatID: string) => Promise<ActiveHold>;
-  confirmSeat: (hold: ActiveHold) => Promise<SessionResponse>;
-  releaseHold: (hold: ActiveHold) => Promise<void>;
-  discardHold: (hold: ActiveHold) => void;
+  addHold: (hold: ActiveHold) => void;
+  removeHold: (sessionID: string) => void;
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null);
@@ -23,4 +21,13 @@ export function useSession(): SessionContextValue {
   const ctx = useContext(SessionContext);
   if (!ctx) throw new Error("useSession must be used within a SessionProvider");
   return ctx;
+}
+
+export function holdFromResponse(res: HoldInfo): ActiveHold {
+  return {
+    movieID: res.movie_id,
+    seatID: res.seat_id,
+    sessionID: res.session_id,
+    expiresAt: new Date(res.expires_at).getTime(),
+  };
 }

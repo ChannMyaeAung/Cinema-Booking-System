@@ -1,11 +1,6 @@
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import * as api from '../api/api'
-
-type MoviesState =
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'ready'; movies: api.Movie[] }
+import { useMovies } from '../api/queries'
+import type { Movie } from '../api/api'
 
 function posterHue(id: string): number {
   let hash = 0
@@ -13,7 +8,7 @@ function posterHue(id: string): number {
   return hash
 }
 
-function MovieCard({ movie }: { movie: api.Movie }) {
+function MovieCard({ movie }: { movie: Movie }) {
   const hue = posterHue(movie.id)
   return (
     <Link to={`/movie/${encodeURIComponent(movie.id)}`} className="movie-card">
@@ -40,44 +35,37 @@ function MovieCard({ movie }: { movie: api.Movie }) {
 }
 
 export default function Home() {
-  const [state, setState] = useState<MoviesState>({ status: 'loading' })
-
-  useEffect(() => {
-    let active = true
-    api
-      .listMovies()
-      .then((movies) => {
-        if (active) setState({ status: 'ready', movies })
-      })
-      .catch((err: unknown) => {
-        if (active) {
-          setState({
-            status: 'error',
-            message: err instanceof Error ? err.message : 'Failed to load movies',
-          })
-        }
-      })
-    return () => {
-      active = false
-    }
-  }, [])
+  const { data: movies, isPending, isError, error } = useMovies()
 
   return (
     <>
       <h1 className="page-title">Now showing</h1>
       <p className="page-subtitle">Pick a film to choose your seats.</p>
 
-      {state.status === 'loading' && <div className="spinner" />}
-
-      {state.status === 'error' && (
-        <div className="error-banner">
-          Could not load the movie list: {state.message}
+      {isPending && (
+        <div className="movie-grid" aria-hidden="true">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div className="movie-card" key={i}>
+              <div className="movie-poster movie-poster-skeleton" />
+              <div className="movie-info">
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {state.status === 'ready' && (
+      {isError && (
+        <div className="error-banner">
+          Could not load the movie list:{' '}
+          {error instanceof Error ? error.message : 'unknown error'}
+        </div>
+      )}
+
+      {movies && (
         <div className="movie-grid">
-          {state.movies.map((movie) => (
+          {movies.map((movie) => (
             <MovieCard key={movie.id} movie={movie} />
           ))}
         </div>

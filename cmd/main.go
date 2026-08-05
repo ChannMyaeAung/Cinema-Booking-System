@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 )
 
@@ -18,7 +19,14 @@ func main() {
 
 	catalog := booking.NewCatalog(movies)
 	mux.HandleFunc("GET /movies", listMovies(catalog))
-	mux.Handle("GET /", http.FileServer(http.Dir("static")))
+
+	// Serve the built React client at root, falling back to the legacy
+	// static UI when the client hasn't been built yet (pure dev mode).
+	rootDir := "static/client/dist"
+	if _, err := os.Stat(filepath.Join(rootDir, "index.html")); err != nil {
+		rootDir = "static"
+	}
+	mux.Handle("GET /", http.FileServer(http.Dir(rootDir)))
 
 	rdb, err := redis.NewClient("localhost:6379")
 	if err != nil {
