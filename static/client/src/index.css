@@ -104,6 +104,32 @@ button {
   font-size: 15px;
 }
 
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-user .cl-signInButton,
+.header-user .cl-signUpButton {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.header-user .cl-signInButton:hover,
+.header-user .cl-signUpButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .app-main {
   max-width: 1080px;
   margin: 0 auto;

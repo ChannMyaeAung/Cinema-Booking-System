@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useClerk } from '@clerk/react'
 import { ApiError, type SeatInfo } from '../api/api'
 import {
   HOLDS_MS,
@@ -26,6 +27,7 @@ export default function SeatMap() {
   const navigate = useNavigate()
   const { userID, activeHolds, addHold, removeHold } = useSession()
   const { push } = useToast()
+  const { openSignIn } = useClerk()
   const [now, setNow] = useState(() => Date.now())
   const [confirmedSeats, setConfirmedSeats] = useState<string[] | null>(null)
 
@@ -93,6 +95,12 @@ export default function SeatMap() {
   function handleSeatClick(seat: SeatInfo) {
     const state = getState(seat)
     if (state === 'booked' || state === 'held') return
+
+    if (!userID) {
+      push('Sign in to book a seat', 'info')
+      openSignIn()
+      return
+    }
 
     if (state === 'selected') {
       const hold = holdsForMovie.find((h) => h.seatID === seat.seat_id)

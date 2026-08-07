@@ -2,13 +2,14 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useUser } from "@clerk/react";
 import * as api from "./api/api";
 import { SessionContext, type ActiveHold } from "./session-context";
 
-const USER_ID_KEY = "cinema.userId";
 const HOLDS_KEY = "cinema.holds";
 
 function readJSON<T>(key: string, fallback: T): T {
@@ -20,18 +21,11 @@ function readJSON<T>(key: string, fallback: T): T {
   }
 }
 
-function newUserID(): string {
-  return `u_${crypto.randomUUID().slice(0, 13)}`;
-}
-
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [userID] = useState<string>(() => {
-    const existing = localStorage.getItem(USER_ID_KEY);
-    if (existing) return existing;
-    const id = newUserID();
-    localStorage.setItem(USER_ID_KEY, id);
-    return id;
-  });
+  // Identity comes from Clerk: the authenticated user id, or "" when
+  // signed out. Booking (holding a seat) requires a signed-in user.
+  const { user } = useUser();
+  const userID = user?.id ?? "";
 
   const [holds, setHolds] = useState<ActiveHold[]>(() =>
     readJSON<ActiveHold[]>(HOLDS_KEY, []).filter(
@@ -45,6 +39,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // Release holds that expired while the app was closed.
   useEffect(() => {
+    if (!userID) return;
     const all = readJSON<ActiveHold[]>(HOLDS_KEY, []);
     const now = Date.now();
     for (const hold of all) {
@@ -53,6 +48,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [userID]);
+
+  // When the identity changes (sign-out, or a different account in the
+  // same browser), the previous user's holds no longer belong to us:
+  // release them server-side (best effort) and clear them locally.
+  // Skipped while prev is empty so the initial Clerk load
+  // ('' -> user.id) doesn't wipe persisted holds on page refresh.
+  const prevUserID = useRef(userID);
+  useEffect(() => {
+    const prev = prevUserID.current;
+    prevUserID.current = userID;
+    if (!prev || prev === userID) return;
+    for (const hold of holds) {
+      void api.releaseSession(hold.sessionID, prev).catch(() => {});
+    }
+    setHolds([]);
+  }, [userID, holds]);
 
   const addHold = useCallback((hold: ActiveHold) => {
     setHolds((prev) => [...prev.filter((h) => h.seatID !== hold.seatID), hold]);

@@ -1,6 +1,7 @@
-import { HashRouter, Route, Routes } from 'react-router-dom'
-import Home from './pages/Home'
-import SeatMap from './pages/SeatMap'
+import { HashRouter, Route, Routes } from "react-router-dom";
+import Home from "./pages/Home";
+import SeatMap from "./pages/SeatMap";
+import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/react";
 
 function App() {
   return (
@@ -13,6 +14,15 @@ function App() {
             </span>
             CineBook
           </a>
+          <div className="header-user">
+            <Show when="signed-out">
+              <SignInButton />
+              <SignUpButton />
+            </Show>
+            <Show when="signed-in">
+              <UserButton />
+            </Show>
+          </div>
         </div>
       </header>
 
@@ -23,7 +33,7 @@ function App() {
         </Routes>
       </main>
     </HashRouter>
-  )
+  );
 }
 
-export default App
+export default App;
