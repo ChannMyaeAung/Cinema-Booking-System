@@ -21,14 +21,13 @@ export function useSeats(movieID: string) {
 interface HoldVariables {
   movieID: string
   seatID: string
-  userID: string
 }
 
 export function useHoldSeat() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ movieID, seatID, userID }: HoldVariables) =>
-      api.holdSeat(movieID, seatID, userID),
+    mutationFn: ({ movieID, seatID }: HoldVariables) =>
+      api.holdSeat(movieID, seatID),
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ['seats', res.movie_id] })
     },
@@ -41,14 +40,13 @@ export function useHoldSeat() {
 interface SessionVariables {
   movieID: string
   sessionID: string
-  userID: string
 }
 
 export function useConfirmSession() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ movieID, sessionID, userID }: SessionVariables) =>
-      api.confirmSession(sessionID, userID).then((res) => ({ res, movieID })),
+    mutationFn: ({ movieID, sessionID }: SessionVariables) =>
+      api.confirmSession(sessionID).then((res) => ({ res, movieID })),
     onSuccess: ({ res }) => {
       void qc.invalidateQueries({ queryKey: ['seats', res.movie_id] })
     },
@@ -58,8 +56,8 @@ export function useConfirmSession() {
 export function useReleaseSession() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ movieID, sessionID, userID }: SessionVariables) =>
-      api.releaseSession(sessionID, userID).then(() => movieID),
+    mutationFn: ({ movieID, sessionID }: SessionVariables) =>
+      api.releaseSession(sessionID).then(() => movieID),
     onSuccess: (movieID) => {
       void qc.invalidateQueries({ queryKey: ['seats', movieID] })
     },

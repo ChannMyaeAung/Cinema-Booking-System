@@ -32,6 +32,14 @@ export interface SessionResponse {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+let tokenGetter: (() => Promise<string | null>) | null = null
+
+export function setTokenGetter(
+  getter: (() => Promise<string | null>) | null,
+): void {
+  tokenGetter = getter
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -43,8 +51,13 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (tokenGetter) {
+    const token = await tokenGetter()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...init,
   })
 
@@ -79,30 +92,22 @@ export function listSeats(movieID: string): Promise<SeatInfo[]> {
   return request<SeatInfo[]>(`/movies/${encodeURIComponent(movieID)}/seats`)
 }
 
-export function holdSeat(
-  movieID: string,
-  seatID: string,
-  userID: string,
-): Promise<HoldResponse> {
+export function holdSeat(movieID: string, seatID: string): Promise<HoldResponse> {
   return request<HoldResponse>(
     `/movies/${encodeURIComponent(movieID)}/seats/${encodeURIComponent(seatID)}/hold`,
-    { method: 'POST', body: JSON.stringify({ user_id: userID }) },
+    { method: 'POST' },
   )
 }
 
-export function confirmSession(
-  sessionID: string,
-  userID: string,
-): Promise<SessionResponse> {
+export function confirmSession(sessionID: string): Promise<SessionResponse> {
   return request<SessionResponse>(
     `/sessions/${encodeURIComponent(sessionID)}/confirm`,
-    { method: 'PUT', body: JSON.stringify({ user_id: userID }) },
+    { method: 'PUT' },
   )
 }
 
-export function releaseSession(sessionID: string, userID: string): Promise<void> {
+export function releaseSession(sessionID: string): Promise<void> {
   return request<void>(`/sessions/${encodeURIComponent(sessionID)}`, {
     method: 'DELETE',
-    body: JSON.stringify({ user_id: userID }),
   })
 }

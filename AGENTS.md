@@ -6,9 +6,11 @@ A concurrent seat-booking app: a Go backend (Redis-backed, single seat per booki
 
 ```bash
 docker compose up -d redis          # start Redis (also provides redis-commander on :8081)
-go run ./cmd                        # Go API on :8080
+go run ./cmd                        # Go API on :8080 (loads CLERK_SECRET_KEY from root .env)
 cd static/client && pnpm dev        # Vite dev server on :5173 (proxies /movies, /sessions to :8080)
 ```
+
+Backend config: `cmd/main.go` loads a root `.env` at startup via `godotenv` (`github.com/joho/godotenv`); shell-exported vars win over the file, and a missing file is fine. `CLERK_SECRET_KEY` (from the Clerk dashboard) is required — the server exits if it's unset. Copy root `.env.example` → `.env` (gitignored).
 
 Open `http://localhost:5173` in dev. For production, `cd static/client && pnpm build` writes to `static/client/dist`, which the Go server serves at `/` (falls back to the legacy `static/index.html` if not built).
 
@@ -30,16 +32,17 @@ There are no frontend tests yet — the client has zero test framework installed
 - `internal/booking/` — the domain.
   - `domain.go` — `Booking` model + `BookingStore` contract.
   - `service.go` — app boundary between handlers and stores.
-  - `handler.go` — HTTP handlers (hold / list seats / confirm / release).
+  - `handler.go` — HTTP handlers (hold / list seats / confirm / release). Hold/confirm/release derive the user from the verified token in the request context — no `user_id` in the body.
   - `catalog.go` — in-memory movie catalog + seat layout metadata.
   - `redis_store.go` — the real runtime store. Hold TTL is `defaultHoldTTL = 2 * time.Minute`. Other stores (`memory_store.go`, `concurrent_store.go`) exist for learning/experiments.
+- `internal/auth/` — Clerk session-token verification. `auth.Middleware` wraps hold/confirm/release, verifies the `Authorization: Bearer <token>` header against Clerk's JWKS (Clerk Go SDK, `clerkhttp.RequireHeaderAuthorization`), and injects the Clerk user id into the request context (`auth.UserID(ctx)`).
 - `internal/adapters/redis/` — Redis client setup.
 - `internal/utils/` — JSON/error response helpers.
 
 ### Client (`static/client/`, React 19 + Vite + pnpm)
-- `src/api/api.ts` — typed fetch client + `ApiError`. Endpoints: GET `/movies`, GET `/movies/{id}/seats`, POST `.../hold`, PUT `/sessions/{id}/confirm`, DELETE `/sessions/{id}`.
+- `src/api/api.ts` — typed fetch client + `ApiError`. Endpoints: GET `/movies`, GET `/movies/{id}/seats`, POST `.../hold`, PUT `/sessions/{id}/confirm`, DELETE `/sessions/{id}`. Attaches `Authorization: Bearer <token>` on every request via a `getToken` getter registered with `setTokenGetter`. No `user_id` in request bodies.
 - `src/api/queries.ts` — TanStack Query hooks. `useSeats` polls every 5s. Mutations (`useHoldSeat`/`useConfirmSession`/`useReleaseSession`) invalidate `['seats', movieID]` on success **and** error so the grid stays fresh.
-- `src/session.tsx` / `src/session-context.ts` — owns **local** hold state only (active holds in localStorage, expiry cleanup). Identity comes from Clerk (`useUser()` → `user.id`); empty when signed out. Holds are released + cleared when the identity changes.
+- `src/session.tsx` / `src/session-context.ts` — owns **local** hold state only (active holds in localStorage, expiry cleanup). Registers Clerk's `getToken()` with the api client so the backend can verify identity. Identity comes from Clerk (`useUser()` → `user.id`); empty when signed out. Holds are released + cleared when the identity changes.
 - `src/pages/Home.tsx` — movie catalog grid via `useMovies`.
 - `src/pages/SeatMap.tsx` — the money screen: seat grid, 4 states (available/selected/held/booked), hold → countdown → confirm, sticky checkout bar, success dialog.
 - `src/toast.tsx` / `src/toast-context.ts` — snackbar feedback (hand-rolled, no shadcn/ui yet).
@@ -48,8 +51,8 @@ There are no frontend tests yet — the client has zero test framework installed
 ## Conventions & Gotchas
 
 - Seat state logic lives in `SeatMap.tsx:getState`. A seat is `selected` when it's in the user's local holds, matches their user_id, or a hold is pending for it.
-- Identity: `user_id` is the Clerk user id; booking (holding a seat) requires sign-in — `SeatMap` calls `openSignIn()` when a signed-out user taps a seat. The header shows Clerk's SignIn/SignUp/UserButton controls.
-- Env: the Clerk publishable key lives in `static/client/.env` (gitignored; copy `.env.example`). Vite needs a restart to pick up new env values.
+- Identity: the user id is the Clerk user id. The backend derives it from the verified session token (`auth.UserID(ctx)`) — the client never sends `user_id` in a body. Booking (holding a seat) requires sign-in — `SeatMap` calls `openSignIn()` when a signed-out user taps a seat. The header shows Clerk's SignIn/SignUp/UserButton controls.
+- Env: the Clerk publishable key lives in `static/client/.env` (gitignored; copy `.env.example`). Vite needs a restart to pick up new env values. The Go backend reads `CLERK_SECRET_KEY` from the root `.env` (gitignored; copy `.env.example`), loaded by `godotenv` in `cmd/main.go`; a shell-exported var overrides the file. The server exits if the key is unset.
 - Two tabs in one browser share localStorage, so they share a `user_id` — they will NOT appear as different users. Test concurrency with an incognito window or a second browser.
 - Hold expiry: the backend releases on TTL; the client auto-releases + toasts when a hold's `expiresAt` passes (2-min holds, `HOLDS_MS` in `queries.ts`).
 - React-router uses `HashRouter` (hash-based routes) — no server-side routing config needed.
@@ -58,18 +61,11 @@ There are no frontend tests yet — the client has zero test framework installed
 
 ## Open Items (current plan)
 
-### NEXT: Secure the backend with Clerk session-token verification
+### DONE: Backend now verifies Clerk session tokens
 
-The frontend now authenticates with Clerk (`@clerk/react` v6, package `@clerk/react`, not `@clerk/clerk-react`), but the Go backend still trusts the `user_id` in the request body — identity is client-asserted and spoofable. Plan:
+The Go backend no longer trusts `user_id` in the request body. `internal/auth` wraps hold/confirm/release and verifies the `Authorization: Bearer <token>` header against Clerk's JWKS (Clerk Go SDK v2, `clerkhttp.RequireHeaderAuthorization`), then injects the verified Clerk user id into the request context (`auth.UserID(ctx)`). The client registers Clerk's `getToken()` with the api client in `session.tsx`, so every request carries the token. `user_id` was removed from all request bodies.
 
-1. Backend: add the Clerk Go SDK (module `github.com/clerk/clerk-sdk-go/v2`) or verify the session JWT via Clerk's JWKS. The frontend will send the session token in an `Authorization: Bearer <token>` header (from Clerk's `useAuth().getToken()` in the client).
-2. Add auth middleware in Go that verifies the token, extracts the Clerk user id, and injects it into the request context. Handlers (hold/confirm/release) must derive the user from the verified token instead of `user_id` in the body.
-3. Update the client `api.ts` to attach the token header on every request (see `src/api/api.ts` — fetch is centralized in `request()`).
-4. Remove `user_id` from request bodies in both `api.ts` and the Go handlers once verification is in place.
-5. Keep the concurrency invariant: the per-(movie, seat) atomic hold in `redis_store.go` must not change. The backend tests in `internal/booking/service_test.go` must keep passing.
-6. Dev webhooks/JWT verification: Clerk's test instance signs JWTs; verify locally with the `CLERK_SECRET_KEY` and publishable key from the Clerk dashboard (add `CLERK_SECRET_KEY` to Go env / a `.env` at repo root, NOT in git).
-
-### AFTER that: Stripe pay-to-confirm
+### NEXT: Stripe pay-to-confirm
 
 - Pay-to-confirm flow: `hold → payment → webhook → confirm seat`. Confirm seats ONLY in the Stripe webhook handler (never trust the client saying "paid").
 - Consider extending the 2-min hold TTL (`defaultHoldTTL` in `internal/booking/redis_store.go`) or pausing the countdown once checkout starts, since payment adds time to the flow.

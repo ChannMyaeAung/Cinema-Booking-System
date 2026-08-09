@@ -76,7 +76,7 @@ export default function SeatMap() {
         removeHold(hold.sessionID)
         push(`Hold on ${hold.seatID} expired`, 'info')
         void releaseMutation
-          .mutateAsync({ movieID, sessionID: hold.sessionID, userID })
+          .mutateAsync({ movieID, sessionID: hold.sessionID })
           .catch(() => {})
       }
     }
@@ -107,7 +107,7 @@ export default function SeatMap() {
       if (hold) {
         removeHold(hold.sessionID)
         releaseMutation.mutate(
-          { movieID, sessionID: hold.sessionID, userID },
+          { movieID, sessionID: hold.sessionID },
           {
             onError: () => push(`Could not release ${seat.seat_id}`, 'error'),
           },
@@ -119,7 +119,7 @@ export default function SeatMap() {
     if (holdMutation.isPending) return
 
     holdMutation.mutate(
-      { movieID, seatID: seat.seat_id, userID },
+      { movieID, seatID: seat.seat_id },
       {
         onSuccess: (res) => {
           addHold(holdFromResponse(res))
@@ -148,7 +148,6 @@ export default function SeatMap() {
         confirmMutation.mutateAsync({
           movieID,
           sessionID: hold.sessionID,
-          userID,
         }),
       ),
     )

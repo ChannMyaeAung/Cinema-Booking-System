@@ -2,19 +2,36 @@ package main
 
 import (
 	"cinema-booking-system/internal/adapters/redis"
+	"cinema-booking-system/internal/auth"
 	"cinema-booking-system/internal/booking"
 	"cinema-booking-system/internal/utils"
 	"context"
+	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"time"
+
+	"github.com/clerk/clerk-sdk-go/v2"
+	"github.com/joho/godotenv"
 )
 
 // main starts the HTTP server and wires the booking application routes.
 func main() {
+	// Load root .env if present; a missing file is fine, a malformed one is not.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Fatalf("loading .env: %v", err)
+	}
+
+	secretKey := os.Getenv("CLERK_SECRET_KEY")
+	if secretKey == "" {
+		log.Fatal("CLERK_SECRET_KEY environment variable is required")
+	}
+	clerk.SetKey(secretKey)
+
 	mux := http.NewServeMux()
 
 	catalog := booking.NewCatalog(movies)
@@ -37,9 +54,9 @@ func main() {
 	bookingHandler := booking.NewHandler(svc, catalog)
 
 	mux.HandleFunc("GET /movies/{movieID}/seats", bookingHandler.ListSeats)
-	mux.HandleFunc("POST /movies/{movieID}/seats/{seatID}/hold", bookingHandler.HoldSeat)
-	mux.HandleFunc("PUT /sessions/{sessionID}/confirm", bookingHandler.ConfirmSession)
-	mux.HandleFunc("DELETE /sessions/{sessionID}", bookingHandler.ReleaseSession)
+	mux.Handle("POST /movies/{movieID}/seats/{seatID}/hold", auth.Middleware(http.HandlerFunc(bookingHandler.HoldSeat)))
+	mux.Handle("PUT /sessions/{sessionID}/confirm", auth.Middleware(http.HandlerFunc(bookingHandler.ConfirmSession)))
+	mux.Handle("DELETE /sessions/{sessionID}", auth.Middleware(http.HandlerFunc(bookingHandler.ReleaseSession)))
 
 	server := &http.Server{Addr: ":8080", Handler: mux}
 

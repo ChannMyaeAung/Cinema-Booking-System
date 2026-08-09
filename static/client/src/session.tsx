@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useUser } from "@clerk/react";
+import { useAuth, useUser } from "@clerk/react";
 import * as api from "./api/api";
 import { SessionContext, type ActiveHold } from "./session-context";
 
@@ -25,7 +25,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Identity comes from Clerk: the authenticated user id, or "" when
   // signed out. Booking (holding a seat) requires a signed-in user.
   const { user } = useUser();
+  const { getToken } = useAuth();
   const userID = user?.id ?? "";
+
+  // Give the api client a way to fetch a fresh Clerk session token so it can
+  // attach `Authorization: Bearer <token>` to every request. The backend
+  // verifies this token and derives the user id from it.
+  useEffect(() => {
+    api.setTokenGetter(() => getToken());
+  }, [getToken]);
 
   const [holds, setHolds] = useState<ActiveHold[]>(() =>
     readJSON<ActiveHold[]>(HOLDS_KEY, []).filter(
@@ -44,7 +52,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const now = Date.now();
     for (const hold of all) {
       if (hold.expiresAt <= now) {
-        void api.releaseSession(hold.sessionID, userID).catch(() => {});
+        void api.releaseSession(hold.sessionID).catch(() => {});
       }
     }
   }, [userID]);
@@ -60,7 +68,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     prevUserID.current = userID;
     if (!prev || prev === userID) return;
     for (const hold of holds) {
-      void api.releaseSession(hold.sessionID, prev).catch(() => {});
+      void api.releaseSession(hold.sessionID).catch(() => {});
     }
     setHolds([]);
   }, [userID, holds]);
