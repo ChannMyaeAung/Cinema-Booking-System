@@ -115,6 +115,32 @@ func TestConcurrentStore_ConfirmAndRelease(t *testing.T) {
 		t.Errorf("expected status confirmed, got %s", confirmed.Status)
 	}
 
+	// Confirmed bookings are permanent: release must be a no-op.
+	err = svc.ReleaseSeat(context.Background(), session.ID, userID)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	listings := svc.ListBookings("screen-1")
+	if len(listings) != 1 {
+		t.Errorf("expected 1 booking after release of confirmed seat, got %d", len(listings))
+	}
+}
+
+func TestConcurrentStore_ReleaseUnconfirmedHold(t *testing.T) {
+	store := NewConcurrentStore()
+	svc := NewService(store)
+	userID := uuid.New().String()
+
+	session, err := svc.Book(Booking{
+		MovieID: "screen-1",
+		SeatID:  "A1",
+		UserID:  userID,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
 	err = svc.ReleaseSeat(context.Background(), session.ID, userID)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -122,7 +148,7 @@ func TestConcurrentStore_ConfirmAndRelease(t *testing.T) {
 
 	listings := svc.ListBookings("screen-1")
 	if len(listings) != 0 {
-		t.Errorf("expected 0 bookings after release, got %d", len(listings))
+		t.Errorf("expected 0 bookings after releasing an unconfirmed hold, got %d", len(listings))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"cinema-booking-system/internal/adapters/redis"
 	"cinema-booking-system/internal/auth"
 	"cinema-booking-system/internal/booking"
+	"cinema-booking-system/internal/payment"
 	"cinema-booking-system/internal/utils"
 	"context"
 	"errors"
@@ -32,6 +33,15 @@ func main() {
 	}
 	clerk.SetKey(secretKey)
 
+	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
+	if stripeSecretKey == "" {
+		log.Fatal("STRIPE_SECRET_KEY environment variable is required")
+	}
+	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	if stripeWebhookSecret == "" {
+		log.Fatal("STRIPE_WEBHOOK_SECRET environment variable is required")
+	}
+
 	mux := http.NewServeMux()
 
 	catalog := booking.NewCatalog(movies)
@@ -51,11 +61,13 @@ func main() {
 	}
 	store := booking.NewRedisStore(rdb)
 	svc := booking.NewService(store)
-	bookingHandler := booking.NewHandler(svc, catalog)
+	pay := payment.NewStripeGateway(stripeSecretKey, stripeWebhookSecret)
+	bookingHandler := booking.NewHandler(svc, catalog, pay)
 
 	mux.HandleFunc("GET /movies/{movieID}/seats", bookingHandler.ListSeats)
 	mux.Handle("POST /movies/{movieID}/seats/{seatID}/hold", auth.Middleware(http.HandlerFunc(bookingHandler.HoldSeat)))
-	mux.Handle("PUT /sessions/{sessionID}/confirm", auth.Middleware(http.HandlerFunc(bookingHandler.ConfirmSession)))
+	mux.Handle("POST /sessions/checkout", auth.Middleware(http.HandlerFunc(bookingHandler.CreateCheckout)))
+	mux.HandleFunc("POST /stripe/webhook", bookingHandler.StripeWebhook)
 	mux.Handle("DELETE /sessions/{sessionID}", auth.Middleware(http.HandlerFunc(bookingHandler.ReleaseSession)))
 
 	server := &http.Server{Addr: ":8080", Handler: mux}
@@ -82,8 +94,8 @@ func main() {
 
 // movies contains the sample catalog exposed by the API.
 var movies = []booking.Movie{
-	{ID: "inception", Title: "Inception", Rows: 5, SeatsPerRow: 8},
-	{ID: "dune", Title: "Dune: Part Two", Rows: 4, SeatsPerRow: 6},
+	{ID: "inception", Title: "Inception", Rows: 5, SeatsPerRow: 8, PriceCents: 1500},
+	{ID: "dune", Title: "Dune: Part Two", Rows: 4, SeatsPerRow: 6, PriceCents: 1200},
 }
 
 // listMovies returns the available movie catalog as JSON.

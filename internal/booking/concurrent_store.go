@@ -55,7 +55,59 @@ func (s *ConcurrentStore) ListBookings(movieID string) []Booking {
 	return result
 }
 
+// GetSession returns the booking payload for a session owned by userID.
+func (s *ConcurrentStore) GetSession(ctx context.Context, sessionID string, userID string) (Booking, error) {
+	s.RLock()
+	defer s.RUnlock()
+
+	seatID, exists := s.sessions[sessionID]
+	if !exists {
+		return Booking{}, ErrSessionNotFound
+	}
+
+	b, exists := s.bookings[seatID]
+	if !exists {
+		return Booking{}, ErrSessionNotFound
+	}
+
+	if b.UserID != userID {
+		return Booking{}, ErrUnauthorized
+	}
+
+	return b, nil
+}
+
+// ExtendHold refreshes a held session's expiry.
+func (s *ConcurrentStore) ExtendHold(ctx context.Context, sessionID string, userID string, ttl time.Duration) error {
+	s.Lock()
+	defer s.Unlock()
+
+	seatID, exists := s.sessions[sessionID]
+	if !exists {
+		return ErrSessionNotFound
+	}
+
+	b, exists := s.bookings[seatID]
+	if !exists {
+		return ErrSessionNotFound
+	}
+
+	if b.UserID != userID {
+		return ErrUnauthorized
+	}
+
+	if b.Status == "confirmed" {
+		return nil
+	}
+
+	b.ExpiresAt = time.Now().Add(ttl)
+	s.bookings[seatID] = b
+
+	return nil
+}
+
 // Confirm converts a held session into a permanent booking.
+// Confirming an already-confirmed session is a no-op (idempotent).
 func (s *ConcurrentStore) Confirm(ctx context.Context, sessionID string, userID string) (Booking, error) {
 	s.Lock()
 	defer s.Unlock()
@@ -72,6 +124,10 @@ func (s *ConcurrentStore) Confirm(ctx context.Context, sessionID string, userID 
 
 	if b.UserID != userID {
 		return Booking{}, ErrUnauthorized
+	}
+
+	if b.Status == "confirmed" {
+		return b, nil
 	}
 
 	b.Status = "confirmed"
@@ -97,6 +153,11 @@ func (s *ConcurrentStore) Release(ctx context.Context, sessionID string, userID 
 
 	if b.UserID != userID {
 		return ErrUnauthorized
+	}
+
+	// A confirmed booking is permanent; never delete it via release.
+	if b.Status == "confirmed" {
+		return nil
 	}
 
 	delete(s.bookings, seatID)

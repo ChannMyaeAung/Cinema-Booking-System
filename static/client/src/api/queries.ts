@@ -37,26 +37,42 @@ export function useHoldSeat() {
   })
 }
 
-interface SessionVariables {
+interface CheckoutVariables {
   movieID: string
-  sessionID: string
+  sessionIDs: string[]
+  successURL: string
+  cancelURL: string
 }
 
-export function useConfirmSession() {
+export function useCreateCheckout() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ movieID, sessionID }: SessionVariables) =>
-      api.confirmSession(sessionID).then((res) => ({ res, movieID })),
-    onSuccess: ({ res }) => {
-      void qc.invalidateQueries({ queryKey: ['seats', res.movie_id] })
+    mutationFn: ({ movieID, sessionIDs, successURL, cancelURL }: CheckoutVariables) =>
+      api
+        .createCheckout({
+          session_ids: sessionIDs,
+          success_url: successURL,
+          cancel_url: cancelURL,
+        })
+        .then((res) => ({ res, movieID })),
+    onSuccess: ({ movieID }) => {
+      void qc.invalidateQueries({ queryKey: ['seats', movieID] })
+    },
+    onError: (_err, vars) => {
+      void qc.invalidateQueries({ queryKey: ['seats', vars.movieID] })
     },
   })
+}
+
+interface ReleaseVariables {
+  movieID: string
+  sessionID: string
 }
 
 export function useReleaseSession() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ movieID, sessionID }: SessionVariables) =>
+    mutationFn: ({ movieID, sessionID }: ReleaseVariables) =>
       api.releaseSession(sessionID).then(() => movieID),
     onSuccess: (movieID) => {
       void qc.invalidateQueries({ queryKey: ['seats', movieID] })

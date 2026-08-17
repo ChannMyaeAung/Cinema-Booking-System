@@ -4,7 +4,7 @@ import { useClerk } from '@clerk/react'
 import { ApiError, type SeatInfo } from '../api/api'
 import {
   HOLDS_MS,
-  useConfirmSession,
+  useCreateCheckout,
   useHoldSeat,
   useMovies,
   useReleaseSession,
@@ -14,6 +14,18 @@ import { holdFromResponse, useSession } from '../session-context'
 import { useToast } from '../toast-context'
 
 type SeatState = 'available' | 'selected' | 'held' | 'booked'
+
+interface PendingCheckout {
+  movieID: string
+  sessionIDs: string[]
+  seats: string[]
+  expiresAt: number
+}
+
+// Matches the backend checkoutHoldTTL so local holds don't expire client-side
+// while the user is on the Stripe checkout page.
+const CHECKOUT_HOLD_MS = 30 * 60 * 1000
+const PENDING_CHECKOUT_KEY = 'cinema.pendingCheckout'
 
 function formatCountdown(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000))
@@ -34,7 +46,7 @@ export default function SeatMap() {
   const moviesQuery = useMovies()
   const seatsQuery = useSeats(movieID)
   const holdMutation = useHoldSeat()
-  const confirmMutation = useConfirmSession()
+  const checkoutMutation = useCreateCheckout()
   const releaseMutation = useReleaseSession()
 
   const movie = moviesQuery.data?.find((m) => m.id === movieID)
@@ -139,32 +151,78 @@ export default function SeatMap() {
   const remaining = holdsForMovie.length
     ? Math.min(...holdsForMovie.map((h) => h.expiresAt - now))
     : 0
-  const confirmPending = confirmMutation.isPending || holdMutation.isPending
+  const checkoutPending = checkoutMutation.isPending || holdMutation.isPending
 
-  async function handleConfirm() {
-    if (confirmPending || holdsForMovie.length === 0) return
-    const results = await Promise.allSettled(
-      holdsForMovie.map((hold) =>
-        confirmMutation.mutateAsync({
-          movieID,
-          sessionID: hold.sessionID,
-        }),
-      ),
-    )
-    const confirmed: string[] = []
-    holdsForMovie.forEach((hold, i) => {
-      const r = results[i]
-      if (r.status === 'fulfilled') {
-        removeHold(hold.sessionID)
-        confirmed.push(hold.seatID)
-      } else {
-        push(`Could not confirm ${hold.seatID}`, 'error')
-      }
-    })
-    if (confirmed.length > 0) {
-      setConfirmedSeats(confirmed)
+  // Track a checkout that is currently on the Stripe hosted page so we can
+  // detect its successful return and show the confirmation dialog.
+  const pendingCheckoutRef = useRef<PendingCheckout | null>(null)
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem(PENDING_CHECKOUT_KEY)
+    if (!raw) return
+    try {
+      const pc = JSON.parse(raw) as PendingCheckout
+      if (pc.movieID === movieID) pendingCheckoutRef.current = pc
+    } catch {
+      sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
     }
+  }, [movieID])
+
+  async function handleCheckout() {
+    if (checkoutPending || holdsForMovie.length === 0) return
+
+    const sessionIDs = holdsForMovie.map((h) => h.sessionID)
+    const seats = holdsForMovie.map((h) => h.seatID)
+    const returnURL = window.location.href
+
+    // Remember what we're paying for; extended so a slow Stripe visit doesn't
+    // expire the local hold (matches the backend checkoutHoldTTL).
+    const pc: PendingCheckout = {
+      movieID,
+      sessionIDs,
+      seats,
+      expiresAt: Date.now() + CHECKOUT_HOLD_MS,
+    }
+    sessionStorage.setItem(PENDING_CHECKOUT_KEY, JSON.stringify(pc))
+
+    for (const hold of holdsForMovie) {
+      addHold({ ...hold, expiresAt: pc.expiresAt })
+    }
+
+    checkoutMutation.mutate(
+      { movieID, sessionIDs, successURL: returnURL, cancelURL: returnURL },
+      {
+        onSuccess: ({ res }) => {
+          window.location.href = res.url
+        },
+        onError: () => {
+          sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+          pendingCheckoutRef.current = null
+          push('Could not start checkout', 'error')
+        },
+      },
+    )
   }
+
+  // After Stripe redirects back (or on a fresh load while a checkout is in
+  // flight), poll the seat map: once every seat we paid for is confirmed by
+  // the webhook, clear the holds and show the success dialog.
+  useEffect(() => {
+    const pc = pendingCheckoutRef.current
+    if (!pc || pc.expiresAt <= Date.now() || !seatsQuery.data) return
+
+    const confirmed = pc.seats.filter((seatID) => {
+      const seat = seatsQuery.data?.find((s) => s.seat_id === seatID)
+      return seat?.booked && seat.confirmed && seat.user_id === userID
+    })
+    if (confirmed.length === 0 || confirmed.length !== pc.seats.length) return
+
+    sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+    pendingCheckoutRef.current = null
+    for (const sessionID of pc.sessionIDs) removeHold(sessionID)
+    setConfirmedSeats(confirmed)
+    push('Payment received — seats confirmed', 'success')
+  }, [seatsQuery.data, movieID, userID, removeHold, push])
 
   function closeDialog() {
     setConfirmedSeats(null)
@@ -178,7 +236,7 @@ export default function SeatMap() {
       <h1 className="page-title">{movie?.title ?? 'Select seats'}</h1>
       <p className="page-subtitle">
         Tap a free seat to hold it. You have {Math.round(HOLDS_MS / 60000)} min
-        to confirm.
+        to pay — once paid, your seat is locked in.
       </p>
 
       {seatsQuery.isPending && (
@@ -275,10 +333,10 @@ export default function SeatMap() {
           <button
             type="button"
             className="checkout-confirm"
-            onClick={handleConfirm}
-            disabled={confirmPending}
+            onClick={handleCheckout}
+            disabled={checkoutPending}
           >
-            {confirmPending ? 'Confirming…' : 'Pay & Confirm'}
+            {checkoutPending ? 'Starting checkout…' : 'Pay & Confirm'}
           </button>
         </div>
       )}

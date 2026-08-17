@@ -26,6 +26,11 @@ type BookingStore interface {
 	Book(b Booking) (Booking, error)
 	ListBookings(movieID string) []Booking
 
+	// GetSession returns the booking for a session owned by the given user.
+	GetSession(ctx context.Context, sessionID string, userID string) (Booking, error)
+	// ExtendHold refreshes a held session's TTL (used during payment checkout).
+	ExtendHold(ctx context.Context, sessionID string, userID string, ttl time.Duration) error
+
 	Confirm(ctx context.Context, sessionID string, userID string) (Booking, error)
 	Release(ctx context.Context, sessionID string, userID string) error
 }

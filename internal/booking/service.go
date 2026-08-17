@@ -2,6 +2,7 @@ package booking
 
 import (
 	"context"
+	"time"
 )
 
 type Service struct {
@@ -18,6 +19,14 @@ func (s *Service) Book(b Booking) (Booking, error) {
 
 func (s *Service) ListBookings(movieID string) []Booking {
 	return s.store.ListBookings(movieID)
+}
+
+func (s *Service) GetSession(ctx context.Context, sessionID string, userID string) (Booking, error) {
+	return s.store.GetSession(ctx, sessionID, userID)
+}
+
+func (s *Service) ExtendHold(ctx context.Context, sessionID string, userID string, ttl time.Duration) error {
+	return s.store.ExtendHold(ctx, sessionID, userID, ttl)
 }
 
 func (s *Service) ConfirmSeat(ctx context.Context, sessionID string, userID string) (Booking, error) {

@@ -8,6 +8,7 @@ type Movie struct {
 	Title       string `json:"title"`
 	Rows        int    `json:"rows"`
 	SeatsPerRow int    `json:"seats_per_row"`
+	PriceCents  int    `json:"price_cents"`
 }
 
 // Catalog provides read access to the movie catalog.

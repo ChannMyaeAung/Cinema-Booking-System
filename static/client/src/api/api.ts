@@ -3,6 +3,7 @@ export interface Movie {
   title: string
   rows: number
   seats_per_row: number
+  price_cents: number
 }
 
 export interface SeatInfo {
@@ -20,15 +21,6 @@ export interface HoldResponse {
 }
 
 export type HoldInfo = HoldResponse
-
-export interface SessionResponse {
-  session_id: string
-  movie_id: string
-  seat_id: string
-  user_id: string
-  status: string
-  expires_at: string
-}
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -99,11 +91,22 @@ export function holdSeat(movieID: string, seatID: string): Promise<HoldResponse>
   )
 }
 
-export function confirmSession(sessionID: string): Promise<SessionResponse> {
-  return request<SessionResponse>(
-    `/sessions/${encodeURIComponent(sessionID)}/confirm`,
-    { method: 'PUT' },
-  )
+export interface CheckoutResponse {
+  url: string
+  id: string
+}
+
+export interface CheckoutRequest {
+  session_ids: string[]
+  success_url: string
+  cancel_url: string
+}
+
+export function createCheckout(req: CheckoutRequest): Promise<CheckoutResponse> {
+  return request<CheckoutResponse>(`/sessions/checkout`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
 }
 
 export function releaseSession(sessionID: string): Promise<void> {

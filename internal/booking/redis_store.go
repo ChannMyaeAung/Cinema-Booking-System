@@ -11,7 +11,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const defaultHoldTTL = 2 * time.Minute
+const (
+	defaultHoldTTL  = 2 * time.Minute
+	checkoutHoldTTL = 30 * time.Minute
+)
 
 // RedisStore provides Redis-backed persistence for seat booking sessions.
 //
@@ -104,10 +107,15 @@ func parseSession(val string) (Booking, error) {
 }
 
 // Confirm converts a held session into a permanent booking and removes the TTL.
+// Confirming an already-confirmed session is a no-op (idempotent).
 func (s *RedisStore) Confirm(ctx context.Context, sessionID string, userID string) (Booking, error) {
 	session, sk, err := s.getSession(ctx, sessionID, userID)
 	if err != nil {
 		return Booking{}, err
+	}
+
+	if session.Status == "confirmed" {
+		return session, nil
 	}
 
 	s.rdb.Persist(ctx, sk)
@@ -152,11 +160,42 @@ func (s *RedisStore) getSession(ctx context.Context, sessionID string, userID st
 	return session, sk, nil
 }
 
-// Release removes an active hold and clears the reverse lookup entry.
-func (s *RedisStore) Release(ctx context.Context, sessionID string, userID string) error {
-	_, sk, err := s.getSession(ctx, sessionID, userID)
+// GetSession returns the booking payload for a session owned by userID.
+func (s *RedisStore) GetSession(ctx context.Context, sessionID string, userID string) (Booking, error) {
+	session, _, err := s.getSession(ctx, sessionID, userID)
+	return session, err
+}
+
+// ExtendHold refreshes the TTL on a held session (used when a payment
+// checkout begins, so the reservation survives the payment flow).
+func (s *RedisStore) ExtendHold(ctx context.Context, sessionID string, userID string, ttl time.Duration) error {
+	session, sk, err := s.getSession(ctx, sessionID, userID)
 	if err != nil {
 		return err
+	}
+	if session.Status == "confirmed" {
+		return nil
+	}
+
+	session.ExpiresAt = time.Now().Add(ttl)
+	val, _ := json.Marshal(session)
+
+	s.rdb.Set(ctx, sk, val, ttl)
+	s.rdb.Expire(ctx, sessionKey(sessionID), ttl)
+
+	return nil
+}
+
+// Release removes an active hold and clears the reverse lookup entry.
+func (s *RedisStore) Release(ctx context.Context, sessionID string, userID string) error {
+	session, sk, err := s.getSession(ctx, sessionID, userID)
+	if err != nil {
+		return err
+	}
+
+	// A confirmed booking is permanent; never delete it via release.
+	if session.Status == "confirmed" {
+		return nil
 	}
 
 	s.rdb.Del(ctx, sk, sessionKey(sessionID))
