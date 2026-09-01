@@ -63,22 +63,30 @@ func (f *FakeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, sig
 		return ev, nil
 	}
 
-	var raw struct {
-		Type     string `json:"type"`
-		Metadata struct {
+	// Decode as a Stripe webhook envelope or a minimal payload.
+	var stripeEvent struct {
+		Type      string `json:"type"`
+		Metadata  struct {
 			UserID     string `json:"user_id"`
 			SessionIDs string `json:"session_ids"`
 		} `json:"metadata"`
+		DataObject      map[string]interface{} `json:"data,omitempty"`
+		PaymentStatus string `json:"payment_status"`
 	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return WebhookEvent{}, err
+	if err := json.Unmarshal(payload, &stripeEvent); err != nil {
+		return WebhookEvent{}, fmt.Errorf("decoding webhook payload: %w", err)
 	}
 
-	ev := WebhookEvent{Type: raw.Type, UserID: raw.Metadata.UserID}
-	for _, s := range strings.Split(raw.Metadata.SessionIDs, ",") {
-		if s != "" {
-			ev.SessionIDs = append(ev.SessionIDs, s)
+	ev := WebhookEvent{Type: stripeEvent.Type, UserID: stripeEvent.Metadata.UserID}
+	if stripeEvent.Metadata.SessionIDs != "" {
+		for _, s := range strings.Split(stripeEvent.Metadata.SessionIDs, ",") {
+			if s != "" {
+				ev.SessionIDs = append(ev.SessionIDs, s)
+			}
 		}
+	}
+	if stripeEvent.PaymentStatus != "" {
+		ev.PaymentStatus = stripeEvent.PaymentStatus
 	}
 	return ev, nil
 }

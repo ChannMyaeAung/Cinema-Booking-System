@@ -26,9 +26,10 @@ type CheckoutSession struct {
 
 // WebhookEvent is a parsed, signature-verified webhook event.
 type WebhookEvent struct {
-	Type       string
+	Type       string // e.g. "checkout.session.completed"
 	SessionIDs []string
 	UserID     string
+	PaymentStatus string
 }
 
 // PaymentGateway abstracts payment processing so the booking lifecycle can be
