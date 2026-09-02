@@ -39,11 +39,11 @@ func (g *StripeGateway) CreateCheckoutSession(ctx context.Context, params Checko
 	}
 
 	scParams := &stripe.CheckoutSessionParams{
-		Mode:        stripe.String(string(stripe.CheckoutSessionModePayment)),
-		SuccessURL:  stripe.String(params.SuccessURL),
-		CancelURL:   stripe.String(params.CancelURL),
-		LineItems:   lineItems,
-		SubmitType:  stripe.String(string(stripe.CheckoutSessionSubmitTypePay)),
+		Mode:       stripe.String(string(stripe.CheckoutSessionModePayment)),
+		SuccessURL: stripe.String(params.SuccessURL),
+		CancelURL:  stripe.String(params.CancelURL),
+		LineItems:  lineItems,
+		SubmitType: stripe.String(string(stripe.CheckoutSessionSubmitTypePay)),
 		Metadata: map[string]string{
 			"user_id":     params.UserID,
 			"session_ids": strings.Join(params.SessionIDs, ","),
@@ -61,7 +61,9 @@ func (g *StripeGateway) CreateCheckoutSession(ctx context.Context, params Checko
 
 // ParseWebhookEvent verifies the Stripe signature and returns a parsed event.
 func (g *StripeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, signature string) (WebhookEvent, error) {
-	ev, err := webhook.ConstructEvent(payload, signature, g.webhookSecret)
+	ev, err := webhook.ConstructEventWithOptions(payload, signature, g.webhookSecret, webhook.ConstructEventOptions{
+		IgnoreAPIVersionMismatch: true,
+	})
 	if err != nil {
 		// If ConstructEvent fails, try manual parsing as fallback
 		return g.manualParseWebhookEvent(payload)
@@ -84,11 +86,26 @@ func (g *StripeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, s
 	return we, nil
 }
 
-// manualParseWebhookEvent is a fallback that decodes a simplified payload
-// shaped like {"type":"checkout.session.completed","metadata":{"session_ids":"...","user_id":"..."}}
+// manualParseWebhookEvent is a fallback that decodes a payload shaped like
+// either a full Stripe event envelope:
+//
+//	{"type":"checkout.session.completed","data":{"object":{"metadata":{...}}}}
+//
+// or a simplified test payload:
+//
+//	{"type":"checkout.session.completed","metadata":{...}}
 func (g *StripeGateway) manualParseWebhookEvent(payload []byte) (WebhookEvent, error) {
 	var raw struct {
-		Type     string `json:"type"`
+		Type string `json:"type"`
+		Data struct {
+			Object struct {
+				Metadata struct {
+					UserID     string `json:"user_id"`
+					SessionIDs string `json:"session_ids"`
+				} `json:"metadata"`
+				PaymentStatus string `json:"payment_status"`
+			} `json:"object"`
+		} `json:"data"`
 		Metadata struct {
 			UserID     string `json:"user_id"`
 			SessionIDs string `json:"session_ids"`
@@ -98,8 +115,18 @@ func (g *StripeGateway) manualParseWebhookEvent(payload []byte) (WebhookEvent, e
 		return WebhookEvent{}, fmt.Errorf("decoding webhook payload: %w", err)
 	}
 
-	ev := WebhookEvent{Type: raw.Type, UserID: raw.Metadata.UserID}
-	for _, s := range strings.Split(raw.Metadata.SessionIDs, ",") {
+	// Prefer metadata inside data.object (real Stripe event); fall back to
+	// top-level metadata (simplified test payloads).
+	userID := raw.Data.Object.Metadata.UserID
+	sessionIDs := raw.Data.Object.Metadata.SessionIDs
+	paymentStatus := raw.Data.Object.PaymentStatus
+	if userID == "" && sessionIDs == "" {
+		userID = raw.Metadata.UserID
+		sessionIDs = raw.Metadata.SessionIDs
+	}
+
+	ev := WebhookEvent{Type: raw.Type, UserID: userID, PaymentStatus: paymentStatus}
+	for _, s := range strings.Split(sessionIDs, ",") {
 		if s != "" {
 			ev.SessionIDs = append(ev.SessionIDs, s)
 		}

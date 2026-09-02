@@ -26,9 +26,9 @@ type CheckoutSession struct {
 
 // WebhookEvent is a parsed, signature-verified webhook event.
 type WebhookEvent struct {
-	Type       string // e.g. "checkout.session.completed"
-	SessionIDs []string
-	UserID     string
+	Type          string // e.g. "checkout.session.completed"
+	SessionIDs    []string
+	UserID        string
 	PaymentStatus string
 }
 

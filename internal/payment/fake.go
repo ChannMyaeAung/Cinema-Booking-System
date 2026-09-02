@@ -65,28 +65,46 @@ func (f *FakeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, sig
 
 	// Decode as a Stripe webhook envelope or a minimal payload.
 	var stripeEvent struct {
-		Type      string `json:"type"`
-		Metadata  struct {
+		Type string `json:"type"`
+		Data struct {
+			Object struct {
+				Metadata struct {
+					UserID     string `json:"user_id"`
+					SessionIDs string `json:"session_ids"`
+				} `json:"metadata"`
+				PaymentStatus string `json:"payment_status"`
+			} `json:"object"`
+		} `json:"data"`
+		Metadata struct {
 			UserID     string `json:"user_id"`
 			SessionIDs string `json:"session_ids"`
 		} `json:"metadata"`
-		DataObject      map[string]interface{} `json:"data,omitempty"`
 		PaymentStatus string `json:"payment_status"`
 	}
 	if err := json.Unmarshal(payload, &stripeEvent); err != nil {
 		return WebhookEvent{}, fmt.Errorf("decoding webhook payload: %w", err)
 	}
 
-	ev := WebhookEvent{Type: stripeEvent.Type, UserID: stripeEvent.Metadata.UserID}
-	if stripeEvent.Metadata.SessionIDs != "" {
-		for _, s := range strings.Split(stripeEvent.Metadata.SessionIDs, ",") {
+	// Prefer metadata inside data.object (real Stripe event); fall back to
+	// top-level metadata (simplified test payloads).
+	userID := stripeEvent.Data.Object.Metadata.UserID
+	sessionIDs := stripeEvent.Data.Object.Metadata.SessionIDs
+	paymentStatus := stripeEvent.Data.Object.PaymentStatus
+	if userID == "" && sessionIDs == "" {
+		userID = stripeEvent.Metadata.UserID
+		sessionIDs = stripeEvent.Metadata.SessionIDs
+	}
+	if paymentStatus == "" {
+		paymentStatus = stripeEvent.PaymentStatus
+	}
+
+	ev := WebhookEvent{Type: stripeEvent.Type, UserID: userID, PaymentStatus: paymentStatus}
+	if sessionIDs != "" {
+		for _, s := range strings.Split(sessionIDs, ",") {
 			if s != "" {
 				ev.SessionIDs = append(ev.SessionIDs, s)
 			}
 		}
-	}
-	if stripeEvent.PaymentStatus != "" {
-		ev.PaymentStatus = stripeEvent.PaymentStatus
 	}
 	return ev, nil
 }
