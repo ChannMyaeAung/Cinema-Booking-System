@@ -36,3 +36,7 @@ func (s *Service) ConfirmSeat(ctx context.Context, sessionID string, userID stri
 func (s *Service) ReleaseSeat(ctx context.Context, sessionID string, userID string) error {
 	return s.store.Release(ctx, sessionID, userID)
 }
+
+func (s *Service) AdminCancelSeat(ctx context.Context, sessionID string) error {
+	return s.store.AdminCancel(ctx, sessionID)
+}

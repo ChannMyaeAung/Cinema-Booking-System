@@ -8,6 +8,7 @@ export interface Movie {
 
 export interface SeatInfo {
   seat_id: string
+  session_id: string
   user_id: string
   booked: boolean
   confirmed: boolean
@@ -111,6 +112,29 @@ export function createCheckout(req: CheckoutRequest): Promise<CheckoutResponse> 
 
 export function releaseSession(sessionID: string): Promise<void> {
   return request<void>(`/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'DELETE',
+  })
+}
+
+export interface ConfirmedSeat {
+  session_id: string
+  movie_id: string
+  seat_id: string
+}
+
+// adminConfirmSeats confirms held seats directly (staff counter booking,
+// no card payment). Admin-only endpoint.
+export function adminConfirmSeats(sessionIDs: string[]): Promise<ConfirmedSeat[]> {
+  return request<ConfirmedSeat[]>('/admin/sessions/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ session_ids: sessionIDs }),
+  })
+}
+
+// adminCancelSession voids a booking (held or confirmed) so a seat is free
+// again. Admin-only endpoint.
+export function adminCancelSession(sessionID: string): Promise<void> {
+  return request<void>(`/admin/sessions/${encodeURIComponent(sessionID)}`, {
     method: 'DELETE',
   })
 }

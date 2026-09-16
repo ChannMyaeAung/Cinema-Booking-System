@@ -201,3 +201,18 @@ func (s *RedisStore) Release(ctx context.Context, sessionID string, userID strin
 	s.rdb.Del(ctx, sk, sessionKey(sessionID))
 	return nil
 }
+
+// AdminCancel removes a booking (held or confirmed) so the seat can be booked
+// again. Only existence is checked — there is no ownership requirement.
+func (s *RedisStore) AdminCancel(ctx context.Context, sessionID string) error {
+	sk, err := s.rdb.Get(ctx, sessionKey(sessionID)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return ErrSessionNotFound
+		}
+		return err
+	}
+
+	s.rdb.Del(ctx, sk, sessionKey(sessionID))
+	return nil
+}

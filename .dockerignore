@@ -1,0 +1,15 @@
+.git
+.gitignore
+
+# Secrets — never let these into a build context or image layer.
+.env
+
+# Dependencies / build artifacts (rebuilt inside the image).
+node_modules
+**/node_modules
+static/client/dist
+static/client/.vite
+
+# Editor / OS junk
+.DS_Store
+*.log

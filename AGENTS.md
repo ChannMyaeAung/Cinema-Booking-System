@@ -7,7 +7,7 @@ A concurrent seat-booking app: a Go backend (Redis-backed, single seat per booki
 ```bash
 docker compose up -d redis          # start Redis (also provides redis-commander on :8081)
 go run ./cmd                        # Go API on :8080 (loads CLERK_SECRET_KEY from root .env)
-cd static/client && pnpm dev        # Vite dev server on :5173 (proxies /movies, /sessions to :8080)
+cd static/client && pnpm dev        # Vite dev server on :5173 (proxies /movies, /sessions, /admin to :8080)
 ```
 
 Backend config: `cmd/main.go` loads a root `.env` at startup via `godotenv` (`github.com/joho/godotenv`); shell-exported vars win over the file, and a missing file is fine. `CLERK_SECRET_KEY`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET` are required — the server exits if any is unset. Copy root `.env.example` → `.env` (gitignored).
@@ -27,6 +27,10 @@ cd static/client && pnpm build      # production bundle (must succeed)
 
 There are no frontend tests yet — the client has zero test framework installed.
 
+### CI / CD
+
+GitHub Actions runs on every push/PR. **`.github/workflows/ci.yml`** checks Go vet/build/test (with a Redis service container so the concurrency-invariant test runs for real) and client lint/typecheck/build. **`.github/workflows/cd.yml`** builds a multi-stage Docker image (`Dockerfile`) on pushes to `main` and version tags, and pushes to GHCR with branch/tag/sha tags (uses `GITHUB_TOKEN` with `packages: write`). The final image (~30 MB Alpine + Go binary + static/client/dist) needs three env vars at runtime (`CLERK_SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) and a Redis instance at `localhost:6379`.
+
 ## Architecture
 
 ### Backend (Go, module `cinema-booking-system`)
@@ -34,17 +38,17 @@ There are no frontend tests yet — the client has zero test framework installed
 - `internal/booking/` — the domain.
   - `domain.go` — `Booking` model + `BookingStore` contract.
   - `service.go` — app boundary between handlers and stores.
-  - `handler.go` — HTTP handlers (hold / list seats / checkout / release / Stripe webhook). Hold/checkout/release derive the user from the verified token in the request context — no `user_id` in the body. Confirm happens ONLY in the webhook handler.
+  - `handler.go` — HTTP handlers (hold / list seats / checkout / release / Stripe webhook / admin confirm / admin cancel). Hold/checkout/release derive the user from the verified token in the request context — no `user_id` in the body. `ListSeats` returns each seat's `session_id` too (used by the admin void flow). Confirm happens in the Stripe webhook handler (online payment) OR `AdminConfirmSeats` (walk-in counter booking).
   - `catalog.go` — in-memory movie catalog + seat layout metadata. `Movie.PriceCents` prices a seat.
   - `redis_store.go` — the real runtime store. Hold TTL is `defaultHoldTTL = 2 * time.Minute`; `checkoutHoldTTL = 30 * time.Minute` is applied when a checkout starts. Other stores (`memory_store.go`, `concurrent_store.go`) exist for learning/experiments.
 - `internal/payment/` — `PaymentGateway` interface (checkout creation + webhook parsing) with a real `StripeGateway` and a `FakeGateway` for tests.
-- `internal/auth/` — Clerk session-token verification. `auth.Middleware` wraps hold/confirm/release, verifies the `Authorization: Bearer <token>` header against Clerk's JWKS (Clerk Go SDK, `clerkhttp.RequireHeaderAuthorization`), and injects the Clerk user id into the request context (`auth.UserID(ctx)`).
+- `internal/auth/` — Clerk session-token verification. `auth.Middleware` wraps hold/checkout/release, verifies the `Authorization: Bearer <token>` header against Clerk's JWKS (Clerk Go SDK, `clerkhttp.RequireHeaderAuthorization`), and injects the Clerk user id into the request context (`auth.UserID(ctx)`). `auth.AdminMiddleware(check)` layers an admin check on top (403 for non-admins). The default `auth.ClerkRoleChecker()` resolves admin status from the user's Clerk **public_metadata.role == "admin"** via the Clerk API, cached for 2 minutes (`internal/auth/admin.go`). `auth.WithUser` builds an authenticated context (used by handler tests).
 - `internal/adapters/redis/` — Redis client setup.
 - `internal/utils/` — JSON/error response helpers.
 
 ### Client (`static/client/`, React 19 + Vite + pnpm)
-- `src/api/api.ts` — typed fetch client + `ApiError`. Endpoints: GET `/movies`, GET `/movies/{id}/seats`, POST `.../hold`, POST `/sessions/checkout`, DELETE `/sessions/{id}`. Attaches `Authorization: Bearer <token>` on every request via a `getToken` getter registered with `setTokenGetter`. No `user_id` in request bodies.
-- `src/api/queries.ts` — TanStack Query hooks. `useSeats` polls every 5s. Mutations (`useHoldSeat`/`useCreateCheckout`/`useReleaseSession`) invalidate `['seats', movieID]` on success **and** error so the grid stays fresh.
+- `src/api/api.ts` — typed fetch client + `ApiError`. Endpoints: GET `/movies`, GET `/movies/{id}/seats`, POST `.../hold`, POST `/sessions/checkout`, DELETE `/sessions/{id}`, POST `/admin/sessions/confirm`, DELETE `/admin/sessions/{id}`. Attaches `Authorization: Bearer <token>` on every request via a `getToken` getter registered with `setTokenGetter`. No `user_id` in request bodies.
+- `src/api/queries.ts` — TanStack Query hooks. `useSeats` polls every 5s. Mutations (`useHoldSeat`/`useCreateCheckout`/`useReleaseSession`/`useAdminConfirm`/`useAdminCancel`) invalidate `['seats', movieID]` on success **and** error so the grid stays fresh.
 - `src/session.tsx` / `src/session-context.ts` — owns **local** hold state only (active holds in localStorage, expiry cleanup). Registers Clerk's `getToken()` with the api client so the backend can verify identity. Identity comes from Clerk (`useUser()` → `user.id`); empty when signed out. Holds are released + cleared when the identity changes.
 - `src/pages/Home.tsx` — movie catalog grid via `useMovies`.
 - `src/pages/SeatMap.tsx` — the money screen: seat grid, 4 states (available/selected/held/booked), hold → countdown → confirm, sticky checkout bar, success dialog.
@@ -59,6 +63,7 @@ There are no frontend tests yet — the client has zero test framework installed
 - Two tabs in one browser share localStorage, so they share a `user_id` — they will NOT appear as different users. Test concurrency with an incognito window or a second browser.
 - Hold expiry: the backend releases on TTL; the client auto-releases + toasts when a hold's `expiresAt` passes (2-min holds, `HOLDS_MS` in `queries.ts`). When a checkout starts, both sides extend to ~30 min (`checkoutHoldTTL` / `CHECKOUT_HOLD_MS`).
 - React-router uses `HashRouter` (hash-based routes) — no server-side routing config needed.
+- Dev proxy gotcha: `vite.config.ts` proxies `/movies`, `/sessions`, and `/admin` to :8080 — if you add a new backend path prefix in dev, add it to the proxy too (an unproxied prefix returns Vite's 404, not Go's).
 - Theming is hand-rolled CSS variables in `src/index.css` (`--bg`, `--surface`, `--accent`, `--held`, …). No Tailwind/shadcn.
 - The `git status` convention: never commit unless the user explicitly asks.
 
@@ -76,6 +81,20 @@ There are no frontend tests yet — the client has zero test framework installed
 - Client: `useCreateCheckout` replaces `useConfirmSession`; `SeatMap` redirects to Stripe, tracks a pending checkout in `sessionStorage` (`cinema.pendingCheckout`), and shows the success dialog once the polled seat state flips to confirmed+booked.
 
 Test the flow: `go test ./...` includes `internal/booking/payment_test.go` (fake gateway, no Stripe needed). For a live test, run `stripe listen --forward-to localhost:8080/stripe/webhook`, then pay with Stripe's test card `4242 4242 4242 4242`.
+
+### DONE: Admin walk-in bookings (no card)
+
+Staff accounts book seats for walk-in customers who pay at the counter — no Visa, no Stripe. Admin status comes from the Clerk user's **public_metadata** (`{"role": "admin"}`), set in the Clerk dashboard (Users → edit user → Metadata → public_metadata). The client toggles staff mode from `user.publicMetadata?.role`; the backend never trusts the client and re-verifies via the Clerk API (`auth.AdminMiddleware(auth.ClerkRoleChecker())`, cached 2 min, fails closed). No `ADMIN_USER_IDS` env list needed.
+
+- New endpoints (both behind auth + admin check; verified non-admin → 403):
+  - `POST /admin/sessions/confirm` — body `{session_ids: [...]}`. Confirms held seats directly (idempotent), reusing the existing ownership-checked `Confirm`. The holder is the staff member's own Clerk account (staff hold seats exactly like customers).
+  - `DELETE /admin/sessions/{sessionID}` — voids a booking (held or confirmed) so the seat is bookable again (customer backs out). Implemented as `AdminCancel` on every store.
+- `BookingStore` gained `AdminCancel` (all three stores) — unlike `Release` it has no ownership requirement and deletes confirmed bookings too.
+- `ListSeats` now also returns each seat's `session_id` so the staff UI can void confirmed seats.
+- Client: `SeatMap` detects staff mode via `useUser().publicMetadata.role === "admin"`. Staff see "Confirm (paid at counter)" instead of "Pay & Confirm" (calls `useAdminConfirm`, no Stripe redirect, success dialog shown immediately). Tapping a confirmed/booked seat as staff prompts `window.confirm` then voids it via `useAdminCancel`.
+- Tests: `internal/booking/admin_test.go` covers direct confirm, unauthenticated reject, ownership enforcement (admin cannot confirm another user's hold), void confirmed, and 404 paths.
+
+Test: mark a Clerk user as admin in the dashboard, sign in as them, hold a seat and confirm — the seat flips straight to booked. `go test ./...` runs `internal/booking/admin_test.go`.
 
 ### NEXT: (todo)
 

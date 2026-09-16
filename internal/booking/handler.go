@@ -82,6 +82,7 @@ func (h *handler) ListSeats(w http.ResponseWriter, r *http.Request) {
 	for _, b := range h.svc.ListBookings(movieID) {
 		state[b.SeatID] = seatInfo{
 			SeatID:    b.SeatID,
+			SessionID: b.ID,
 			UserID:    b.UserID,
 			Booked:    true,
 			Confirmed: b.Status == "confirmed",
@@ -106,6 +107,7 @@ func (h *handler) ListSeats(w http.ResponseWriter, r *http.Request) {
 // seatInfo describes the booking state for a single seat.
 type seatInfo struct {
 	SeatID    string `json:"seat_id"`
+	SessionID string `json:"session_id"`
 	UserID    string `json:"user_id"`
 	Booked    bool   `json:"booked"`
 	Confirmed bool   `json:"confirmed"`
@@ -245,6 +247,86 @@ func (h *handler) ReleaseSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, "failed to release session")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminConfirmRequest is the body for confirming held seats from the counter.
+type adminConfirmRequest struct {
+	SessionIDs []string `json:"session_ids"`
+}
+
+// adminConfirmedSeat is one seat confirmed by staff (no card payment).
+type adminConfirmedSeat struct {
+	SessionID string `json:"session_id"`
+	MovieID   string `json:"movie_id"`
+	SeatID    string `json:"seat_id"`
+}
+
+// AdminConfirmSeats confirms held seats directly during a walk-in booking.
+// Staff accounts (Clerk public_metadata.role == "admin") use this instead of
+// a Stripe checkout — the customer pays at the counter. The route is wrapped
+// in auth.AdminMiddleware, so reaching here means the caller is a verified
+// admin. Confirming an already-confirmed session is a no-op (idempotent).
+func (h *handler) AdminConfirmSeats(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+	if userID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req adminConfirmRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.SessionIDs) == 0 {
+		utils.WriteError(w, http.StatusBadRequest, "session_ids is required")
+		return
+	}
+
+	confirmed := make([]adminConfirmedSeat, 0, len(req.SessionIDs))
+	for _, sessionID := range req.SessionIDs {
+		session, err := h.svc.ConfirmSeat(r.Context(), sessionID, userID)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrSessionNotFound):
+				utils.WriteError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrUnauthorized):
+				utils.WriteError(w, http.StatusForbidden, err.Error())
+			default:
+				utils.WriteError(w, http.StatusInternalServerError, "failed to confirm seat")
+			}
+			return
+		}
+		confirmed = append(confirmed, adminConfirmedSeat{
+			SessionID: session.ID,
+			MovieID:   session.MovieID,
+			SeatID:    session.SeatID,
+		})
+	}
+
+	utils.WriteJSON(w, http.StatusOK, confirmed)
+}
+
+// AdminCancelSession voids a booking (held or confirmed) so the seat becomes
+// bookable again, e.g. a customer backs out at the counter. Admin-only.
+func (h *handler) AdminCancelSession(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+	if userID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	sessionID := r.PathValue("sessionID")
+	if err := h.svc.AdminCancelSeat(r.Context(), sessionID); err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			utils.WriteError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "failed to cancel booking")
 		return
 	}
 

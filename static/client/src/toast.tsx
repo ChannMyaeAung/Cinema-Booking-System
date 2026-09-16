@@ -1,31 +1,20 @@
-import {
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 import {
   ToastContext,
   type ToastTone,
 } from "./toast-context";
 
-interface ToastItem {
-  id: number;
-  message: string;
-  tone: ToastTone;
-}
-
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const idRef = useRef(0);
-
   const push = useCallback((message: string, tone: ToastTone = "info") => {
-    const id = ++idRef.current;
-    setToasts((prev) => [...prev, { id, message, tone }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
+    if (tone === "success") {
+      toast.success(message);
+    } else if (tone === "error") {
+      toast.error(message);
+    } else {
+      toast(message);
+    }
   }, []);
 
   const value = useMemo(() => ({ push }), [push]);
@@ -33,13 +22,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="toast-stack" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.tone}`}>
-            {t.message}
-          </div>
-        ))}
-      </div>
+      <Toaster position="top-right" richColors closeButton />
     </ToastContext.Provider>
   );
 }

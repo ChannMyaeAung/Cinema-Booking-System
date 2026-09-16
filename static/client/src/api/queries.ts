@@ -79,3 +79,44 @@ export function useReleaseSession() {
     },
   })
 }
+
+interface AdminConfirmVariables {
+  movieID: string
+  sessionIDs: string[]
+}
+
+// useAdminConfirm confirms held seats at the counter without a card payment
+// (staff booking on behalf of a walk-in customer).
+export function useAdminConfirm() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ movieID, sessionIDs }: AdminConfirmVariables) =>
+      api.adminConfirmSeats(sessionIDs).then((confirmed) => ({ confirmed, movieID })),
+    onSuccess: ({ movieID }) => {
+      void qc.invalidateQueries({ queryKey: ['seats', movieID] })
+    },
+    onError: (_err, vars) => {
+      void qc.invalidateQueries({ queryKey: ['seats', vars.movieID] })
+    },
+  })
+}
+
+interface AdminCancelVariables {
+  movieID: string
+  sessionID: string
+}
+
+// useAdminCancel voids a confirmed booking so the seat is available again.
+export function useAdminCancel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ movieID, sessionID }: AdminCancelVariables) =>
+      api.adminCancelSession(sessionID).then(() => movieID),
+    onSuccess: (movieID) => {
+      void qc.invalidateQueries({ queryKey: ['seats', movieID] })
+    },
+    onError: (_err, vars) => {
+      void qc.invalidateQueries({ queryKey: ['seats', vars.movieID] })
+    },
+  })
+}

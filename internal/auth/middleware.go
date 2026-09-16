@@ -36,3 +36,10 @@ func UserID(ctx context.Context) string {
 	}
 	return v
 }
+
+// WithUser returns a copy of ctx carrying the given authenticated user id.
+// It mirrors what Middleware does internally and exists so handlers (and
+// handler tests) can build an authenticated context without a real token.
+func WithUser(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey{}, userID)
+}

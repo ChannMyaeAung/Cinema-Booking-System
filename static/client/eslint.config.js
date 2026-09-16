@@ -19,4 +19,13 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // shadcn/ui + aceternity registries deliberately co-export a component and
+    // its variants (e.g. `Button` + `buttonVariants`), which the react-refresh
+    // rule misflags. Not fast-refresh-friendly by design; keep the rule off.
+    files: ['src/components/ui/**'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

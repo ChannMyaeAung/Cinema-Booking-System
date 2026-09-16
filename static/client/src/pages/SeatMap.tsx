@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useClerk } from "@clerk/react";
+import { useClerk, useUser } from "@clerk/react";
 import { ApiError, type SeatInfo } from "../api/api";
 import {
-  HOLDS_MS,
+  useAdminCancel,
+  useAdminConfirm,
   useCreateCheckout,
   useHoldSeat,
   useMovies,
@@ -12,6 +13,20 @@ import {
 } from "../api/queries";
 import { holdFromResponse, useSession } from "../session-context";
 import { useToast } from "../toast-context";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ArrowLeft, PartyPopper, Timer, X } from "lucide-react";
 
 type SeatState = "available" | "selected" | "held" | "booked";
 
@@ -22,8 +37,6 @@ interface PendingCheckout {
   expiresAt: number;
 }
 
-// Matches the backend checkoutHoldTTL so local holds don't expire client-side
-// while the user is on the Stripe checkout page.
 const CHECKOUT_HOLD_MS = 30 * 60 * 1000;
 const PENDING_CHECKOUT_KEY = "cinema.pendingCheckout";
 
@@ -34,12 +47,52 @@ function formatCountdown(ms: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+const seatStateStyles: Record<SeatState, string> = {
+  available: "border-ok/50 bg-surface-2 text-ok hover:border-ok hover:bg-ok/15",
+  selected:
+    "border-primary bg-primary text-primary-foreground shadow-[0_0_18px_-4px] shadow-primary/70",
+  held: "border-[#ff9d3c]/50 bg-[#ff9d3c]/10 text-[#ff9d3c] cursor-not-allowed",
+  booked: "border-transparent bg-white/[0.05] text-white/30 cursor-not-allowed",
+};
+
+function SeatButton({
+  seat,
+  state,
+  disabled,
+  onClick,
+}: {
+  seat: SeatInfo;
+  state: SeatState;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "grid h-7.5 w-8.5 place-items-center rounded-[6px_6px_3px_3px] border text-xs font-semibold transition-all hover:-translate-y-0.5 max-[560px]:h-6.5 max-[560px]:w-7",
+        seatStateStyles[state],
+      )}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={`Seat ${seat.seat_id}, ${state}`}
+      aria-pressed={state === "selected"}
+    >
+      {seat.seat_id.slice(1)}
+    </button>
+  );
+}
+
 export default function SeatMap() {
   const { movieID = "" } = useParams<{ movieID: string }>();
   const navigate = useNavigate();
   const { userID, activeHolds, addHold, removeHold } = useSession();
   const { push } = useToast();
   const { openSignIn } = useClerk();
+  const { user } = useUser();
+
+  // check with stripe public metadata if user is admin
+  const isAdmin = user?.publicMetadata?.role === "admin";
   const [now, setNow] = useState(() => Date.now());
   const [confirmedSeats, setConfirmedSeats] = useState<string[] | null>(null);
 
@@ -48,6 +101,8 @@ export default function SeatMap() {
   const holdMutation = useHoldSeat();
   const checkoutMutation = useCreateCheckout();
   const releaseMutation = useReleaseSession();
+  const confirmMutation = useAdminConfirm();
+  const cancelMutation = useAdminCancel();
 
   const movie = moviesQuery.data?.find((m) => m.id === movieID);
 
@@ -107,7 +162,29 @@ export default function SeatMap() {
     return "available";
   }
 
+  function handleAdminVoid(seat: SeatInfo) {
+    if (!seat.session_id) return;
+    const ok = window.confirm(
+      `Void the booking on seat ${seat.seat_id}? The seat becomes free again.`,
+    );
+    if (!ok) return;
+    cancelMutation.mutate(
+      { movieID, sessionID: seat.session_id },
+      {
+        onSuccess: () =>
+          push(`Booking on ${seat.seat_id} cancelled`, "success"),
+        onError: () =>
+          push(`Could not cancel booking on ${seat.seat_id}`, "error"),
+      },
+    );
+  }
+
   function handleSeatClick(seat: SeatInfo) {
+    if (isAdmin && seat.booked && seat.confirmed) {
+      handleAdminVoid(seat);
+      return;
+    }
+
     const state = getState(seat);
     if (state === "booked" || state === "held") return;
 
@@ -154,10 +231,11 @@ export default function SeatMap() {
   const remaining = holdsForMovie.length
     ? Math.min(...holdsForMovie.map((h) => h.expiresAt - now))
     : 0;
-  const checkoutPending = checkoutMutation.isPending || holdMutation.isPending;
+  const checkoutPending =
+    checkoutMutation.isPending ||
+    holdMutation.isPending ||
+    confirmMutation.isPending;
 
-  // Track a checkout that is currently on the Stripe hosted page so we can
-  // detect its successful return and show the confirmation dialog.
   const pendingCheckoutRef = useRef<PendingCheckout | null>(null);
 
   useEffect(() => {
@@ -178,8 +256,6 @@ export default function SeatMap() {
     const seats = holdsForMovie.map((h) => h.seatID);
     const returnURL = window.location.href;
 
-    // Remember what we're paying for; extended so a slow Stripe visit doesn't
-    // expire the local hold (matches the backend checkoutHoldTTL).
     const pc: PendingCheckout = {
       movieID,
       sessionIDs,
@@ -207,9 +283,26 @@ export default function SeatMap() {
     );
   }
 
-  // After Stripe redirects back (or on a fresh load while a checkout is in
-  // flight), poll the seat map: once every seat we paid for is confirmed by
-  // the webhook, clear the holds and show the success dialog.
+  function handleAdminConfirm() {
+    if (checkoutPending || holdsForMovie.length === 0) return;
+
+    const sessionIDs = holdsForMovie.map((h) => h.sessionID);
+    confirmMutation.mutate(
+      { movieID, sessionIDs },
+      {
+        onSuccess: ({ confirmed }) => {
+          const seats = confirmed.map((c) => c.seat_id);
+          for (const hold of holdsForMovie) removeHold(hold.sessionID);
+          setConfirmedSeats(seats);
+          push("Booking confirmed — paid at counter", "success");
+        },
+        onError: () => {
+          push("Could not confirm booking", "error");
+        },
+      },
+    );
+  }
+
   useEffect(() => {
     const pc = pendingCheckoutRef.current;
     if (!pc || pc.expiresAt <= Date.now() || !seatsQuery.data) return;
@@ -224,7 +317,7 @@ export default function SeatMap() {
     pendingCheckoutRef.current = null;
     for (const sessionID of pc.sessionIDs) removeHold(sessionID);
     setConfirmedSeats(confirmed);
-    push("Payment received — seats confirmed", "success");
+    push("Payment received - seats confirmed", "success");
   }, [seatsQuery.data, movieID, userID, removeHold, push]);
 
   function closeDialog() {
@@ -232,172 +325,213 @@ export default function SeatMap() {
   }
 
   return (
-    <>
-      <Link to="/" className="back-link">
-        ← All movies
+    <section>
+      <Link
+        to="/"
+        className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" />
+        All movies
       </Link>
-      <h1 className="page-title">{movie?.title ?? "Select seats"}</h1>
-      <p className="page-subtitle">
-        Tap a free seat to hold it. You have {Math.round(HOLDS_MS / 60000)} min
-        to pay. Once paid, your seat is locked in.
+
+      <h1 className="font-heading text-3xl font-bold tracking-tight">
+        {movie?.title ?? "Select seats"}
+      </h1>
+      <p className="mt-1 text-muted-foreground">
+        {isAdmin
+          ? "Staff mode: tap a free seat to hold it, then confirm at the counter — no card payment needed. Tap a booked seat to void it."
+          : "Tap a free seat to hold it. You have 2 min to pay. Once paid, your seat is locked in."}
       </p>
 
       {seatsQuery.isPending && (
-        <>
-          <div className="screen" aria-hidden="true">
-            Screen
+        <div className="mt-8" aria-hidden="true">
+          <div className="mx-auto max-w-[620px]">
+            <div className="mx-auto mb-7 h-11 w-full rounded-[50%_50%_4px_4px] bg-primary/20" />
+            <div className="mb-6 flex flex-col gap-2">
+              {Array.from({ length: 5 }).map((_, r) => (
+                <div className="flex items-center justify-center gap-2" key={r}>
+                  {Array.from({ length: 8 }).map((_, c) => (
+                    <Skeleton
+                      key={c}
+                      className="h-[30px] w-[34px] rounded-[6px]"
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="seat-grid skeleton-grid" aria-hidden="true">
-            {Array.from({ length: 5 }).map((_, r) => (
-              <div className="seat-row" key={r}>
-                <span className="seat-row-label" />
-                {Array.from({ length: 8 }).map((_, c) => (
-                  <span className="seat seat-skeleton" key={c} />
-                ))}
-              </div>
-            ))}
-          </div>
-        </>
+        </div>
       )}
 
       {seatsQuery.isError && (
-        <div className="error-banner">
+        <div
+          role="alert"
+          className="mt-8 rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
+        >
           Could not load the seat map. Is the server running?
         </div>
       )}
 
       {seatsQuery.data && (
         <>
-          <div className="screen" aria-hidden="true">
-            Screen
-          </div>
-          <div className="seat-grid" role="grid" aria-label="Seat map">
-            {rows.map(([label, seats]) => (
-              <div className="seat-row" role="row" key={label}>
-                <span className="seat-row-label" aria-hidden="true">
-                  {label}
-                </span>
-                {seats.map((seat) => (
-                  <button
-                    type="button"
-                    role="gridcell"
-                    key={seat.seat_id}
-                    className={`seat seat-${getState(seat)}`}
-                    onClick={() => handleSeatClick(seat)}
-                    disabled={
-                      getState(seat) === "booked" || getState(seat) === "held"
-                    }
-                    aria-label={`Seat ${seat.seat_id}, ${getState(seat)}`}
-                    aria-pressed={getState(seat) === "selected"}
+          <div className="mx-auto mt-8 max-w-155">
+            <div
+              className="mx-auto mb-7 grid h-11 w-full place-items-center rounded-[50%_50%_4px_4px] bg-linear-to-b from-primary/40 to-primary/5 text-[0.7rem] uppercase tracking-[0.3em] text-white/70 shadow-[0_-10px_40px_-8px] shadow-primary/20"
+              aria-hidden="true"
+            >
+              Screen
+            </div>
+
+            <div
+              className="mb-6 flex flex-col gap-2"
+              role="grid"
+              aria-label="Seat map"
+            >
+              {rows.map(([label, seats]) => (
+                <div
+                  className="flex items-center justify-center gap-2"
+                  role="row"
+                  key={label}
+                >
+                  <span
+                    className="w-5 text-center text-[0.8rem] font-semibold text-muted-foreground"
+                    aria-hidden="true"
                   >
-                    {seat.seat_id.slice(1)}
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
+                    {label}
+                  </span>
+                  {seats.map((seat) => {
+                    const state = getState(seat);
+                    return (
+                      <SeatButton
+                        key={seat.seat_id}
+                        seat={seat}
+                        state={state}
+                        disabled={
+                          state === "held" || (state === "booked" && !isAdmin)
+                        }
+                        onClick={() => handleSeatClick(seat)}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
 
-          <div className="seat-legend" aria-label="Legend">
-            <span className="legend-item">
-              <span className="legend-swatch seat-available" /> Available
-            </span>
-            <span className="legend-item">
-              <span className="legend-swatch seat-selected" /> Selected
-            </span>
-            <span className="legend-item">
-              <span className="legend-swatch seat-held" /> Held by others
-            </span>
-            <span className="legend-item">
-              <span className="legend-swatch seat-booked" /> Booked
-            </span>
-          </div>
-        </>
-      )}
-
-      {holdsForMovie.length > 0 && (
-        <div className="checkout-bar" role="region" aria-label="Checkout">
-          <div className="checkout-seats">
-            {holdsForMovie.map((hold) => (
-              <button
-                key={hold.sessionID}
-                type="button"
-                className="checkout-seat"
-                onClick={() =>
-                  handleSeatClick({ seat_id: hold.seatID } as SeatInfo)
-                }
-                aria-label={`Remove hold on ${hold.seatID}`}
-              >
-                {hold.seatID} ×
-              </button>
-            ))}
-          </div>
-          <div className="checkout-countdown">
-            Time left{" "}
-            <strong className={remaining < 30_000 ? "urgent" : ""}>
-              {formatCountdown(remaining)}
-            </strong>
-          </div>
-          <button
-            type="button"
-            className="checkout-confirm"
-            onClick={handleCheckout}
-            disabled={checkoutPending}
-          >
-            {checkoutPending ? "Starting checkout…" : "Pay & Confirm"}
-          </button>
-        </div>
-      )}
-
-      {confirmedSeats !== null && (
-        <div
-          className="dialog-backdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeDialog();
-          }}
-        >
-          <div
-            className="dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="dialog-title"
-          >
-            <h2 id="dialog-title" className="dialog-title">
-              Booking confirmed
-            </h2>
-            <p className="dialog-movie">{movie?.title}</p>
-            <div className="dialog-seats">
-              {confirmedSeats.map((seatID) => (
-                <span key={seatID} className="dialog-seat">
-                  {seatID}
+            <div
+              className="mb-10 flex flex-wrap items-center justify-center gap-5 text-[0.8rem] text-muted-foreground"
+              aria-label="Legend"
+            >
+              {(
+                [
+                  ["available", "Available"],
+                  ["selected", "Selected"],
+                  ["held", "Held by others"],
+                  ["booked", "Booked"],
+                ] as const
+              ).map(([state, label]) => (
+                <span className="inline-flex items-center gap-2" key={state}>
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-4 rounded-[4px] border",
+                      seatStateStyles[state],
+                    )}
+                  />
+                  {label}
                 </span>
               ))}
             </div>
-            <p className="dialog-note">
-              {confirmedSeats.length === 1
-                ? "Your seat is locked in."
-                : "Your seats are locked in."}{" "}
-              Show this screen when you arrive at the counter.
-            </p>
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="checkout-confirm"
-                onClick={() => navigate("/")}
-                autoFocus
-              >
-                Done
-              </button>
-              <button
-                type="button"
-                className="dialog-close"
-                onClick={closeDialog}
-              >
-                Back to seats
-              </button>
-            </div>
           </div>
-        </div>
+
+          {holdsForMovie.length > 0 && (
+            <div className="fixed inset-x-0 bottom-4 z-30 px-4">
+              <div className="mx-auto flex max-w-160 flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-card/95 p-4 shadow-[0_16px_48px_-16px] shadow-black/60 backdrop-blur-xl">
+                <div className="flex flex-wrap gap-2">
+                  {holdsForMovie.map((hold) => (
+                    <button
+                      key={hold.sessionID}
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-full border border-primary/50 bg-primary/10 px-3 py-1 text-xs font-bold text-primary transition-colors hover:bg-primary/20"
+                      onClick={() =>
+                        handleSeatClick({ seat_id: hold.seatID } as SeatInfo)
+                      }
+                      aria-label={`Remove hold on ${hold.seatID}`}
+                    >
+                      {hold.seatID}
+                      <X className="size-3" />
+                    </button>
+                  ))}
+                </div>
+
+                <span className="ml-auto inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground">
+                  <Timer className="size-4" />
+                  <strong
+                    className={cn(
+                      "font-semibold tabular-nums",
+                      remaining < 30_000
+                        ? "animate-pulse text-destructive"
+                        : "text-foreground",
+                    )}
+                  >
+                    {formatCountdown(remaining)}
+                  </strong>
+                </span>
+
+                <Button
+                  onClick={isAdmin ? handleAdminConfirm : handleCheckout}
+                  disabled={checkoutPending}
+                  size="lg"
+                >
+                  {checkoutPending
+                    ? "Confirming…"
+                    : isAdmin
+                      ? "Confirm (paid at counter)"
+                      : "Pay & Confirm"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
       )}
-    </>
+
+      <Dialog open={confirmedSeats !== null} onOpenChange={closeDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <PartyPopper className="size-5 text-primary" />
+              Booking confirmed
+            </DialogTitle>
+            <DialogDescription>{movie?.title}</DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap gap-2">
+            {confirmedSeats?.map((seatID) => (
+              <Badge key={seatID} className="px-3 py-1 text-sm font-bold">
+                {seatID}
+              </Badge>
+            ))}
+          </div>
+
+          <Separator />
+
+          <p className="text-sm text-muted-foreground">
+            {confirmedSeats?.length === 1
+              ? "Your seat is locked in."
+              : "Your seats are locked in."}{" "}
+            {isAdmin
+              ? "Payment collected at the counter."
+              : "Show this screen when you arrive at the counter."}
+          </p>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDialog}>
+              Back to seats
+            </Button>
+            <Button onClick={() => navigate("/")} autoFocus>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
   );
 }

@@ -33,4 +33,9 @@ type BookingStore interface {
 
 	Confirm(ctx context.Context, sessionID string, userID string) (Booking, error)
 	Release(ctx context.Context, sessionID string, userID string) error
+
+	// AdminCancel removes a booking (held or confirmed) entirely so the seat
+	// becomes available again. Staff use it to void a confirmed counter
+	// booking; unlike Release it does not require the booking's owner.
+	AdminCancel(ctx context.Context, sessionID string) error
 }

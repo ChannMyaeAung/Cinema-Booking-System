@@ -70,6 +70,10 @@ func main() {
 	mux.HandleFunc("POST /stripe/webhook", bookingHandler.StripeWebhook)
 	mux.Handle("DELETE /sessions/{sessionID}", auth.Middleware(http.HandlerFunc(bookingHandler.ReleaseSession)))
 
+	admin := auth.AdminMiddleware(auth.ClerkRoleChecker())
+	mux.Handle("POST /admin/sessions/confirm", admin(http.HandlerFunc(bookingHandler.AdminConfirmSeats)))
+	mux.Handle("DELETE /admin/sessions/{sessionID}", admin(http.HandlerFunc(bookingHandler.AdminCancelSession)))
+
 	server := &http.Server{Addr: ":8080", Handler: mux}
 
 	go func() {

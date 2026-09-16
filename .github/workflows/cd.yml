@@ -1,0 +1,58 @@
+name: CD
+
+# Builds the entire app (client bundle + Go server) into a multi-stage Docker
+# image and pushes it to GHCR on every push to main and version tags.
+#
+# Runtime requirements (configure on your host, never in the image):
+#   - Env vars: CLERK_SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+#   - A Redis instance reachable at localhost:6379 (cmd/main.go hardcodes the
+#     addr; run Redis in the same container/network as the app)
+#   - Serve on :8080; the built client lives at static/client/dist in the image.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build & push image to GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Show what tags were pushed (useful for wiring up the deploy side).
+      - name: Summary
+        run: echo "Pushed ${{ steps.meta.outputs.tags }}"

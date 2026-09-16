@@ -165,3 +165,20 @@ func (s *ConcurrentStore) Release(ctx context.Context, sessionID string, userID 
 
 	return nil
 }
+
+// AdminCancel removes a booking (held or confirmed) so the seat can be
+// booked again. There is no ownership requirement.
+func (s *ConcurrentStore) AdminCancel(ctx context.Context, sessionID string) error {
+	s.Lock()
+	defer s.Unlock()
+
+	seatID, exists := s.sessions[sessionID]
+	if !exists {
+		return ErrSessionNotFound
+	}
+
+	delete(s.bookings, seatID)
+	delete(s.sessions, sessionID)
+
+	return nil
+}
