@@ -51,20 +51,21 @@ GitHub Actions runs on every push/PR. **`.github/workflows/ci.yml`** checks Go v
 - `src/api/queries.ts` — TanStack Query hooks. `useSeats` polls every 5s. Mutations (`useHoldSeat`/`useCreateCheckout`/`useReleaseSession`/`useAdminConfirm`/`useAdminCancel`) invalidate `['seats', movieID]` on success **and** error so the grid stays fresh.
 - `src/session.tsx` / `src/session-context.ts` — owns **local** hold state only (active holds in localStorage, expiry cleanup). Registers Clerk's `getToken()` with the api client so the backend can verify identity. Identity comes from Clerk (`useUser()` → `user.id`); empty when signed out. Holds are released + cleared when the identity changes.
 - `src/pages/Home.tsx` — movie catalog grid via `useMovies`.
-- `src/pages/SeatMap.tsx` — the money screen: seat grid, 4 states (available/selected/held/booked), hold → countdown → confirm, sticky checkout bar, success dialog.
-- `src/toast.tsx` / `src/toast-context.ts` — snackbar feedback (hand-rolled, no shadcn/ui yet).
+- `src/pages/SeatMap.tsx` — the money screen; **thin** render-only component (seat grid, 4 states (available/selected/held/booked), hold → countdown → confirm, sticky checkout bar, success dialog, admin void dialog (staff-only)). All hold/expiry/checkout/void logic lives in `src/pages/seat-map/useSeatMap.ts` (a custom hook returning state + handlers; the page wires them to presentational widgets `SeatGrid`, `CheckoutBar`, `SuccessDialog`, `VoidDialog`).
+- `src/toast.tsx` / `src/toast-context.ts` — snackbar feedback via **sonner** (`Toaster` in `@/components/ui/sonner`).
+- `src/components/ui/` — shadcn/ui component library (button, dialog, badge, separator, skeleton, sonner, aurora-background). `src/lib/utils.ts` exports the `cn` class-merge helper.
 - `static/client/index.html` — page title is `CineBook`; the built app is served from `static/client/dist`.
 
 ## Conventions & Gotchas
 
-- Seat state logic lives in `SeatMap.tsx:getState`. A seat is `selected` when it's in the user's local holds, matches their user_id, or a hold is pending for it.
+- Seat state logic lives in `useSeatMap.ts:getState`. A seat is `selected` when it's in the user's local holds, matches their user_id, or a hold is pending for it.
 - Identity: the user id is the Clerk user id. The backend derives it from the verified session token (`auth.UserID(ctx)`) — the client never sends `user_id` in a body. Booking (holding a seat) requires sign-in — `SeatMap` calls `openSignIn()` when a signed-out user taps a seat. The header shows Clerk's SignIn/SignUp/UserButton controls.
 - Env: the Clerk publishable key lives in `static/client/.env` (gitignored; copy `.env.example`). Vite needs a restart to pick up new env values. The Go backend reads `CLERK_SECRET_KEY` from the root `.env` (gitignored; copy `.env.example`), loaded by `godotenv` in `cmd/main.go`; a shell-exported var overrides the file. The server exits if the key is unset.
 - Two tabs in one browser share localStorage, so they share a `user_id` — they will NOT appear as different users. Test concurrency with an incognito window or a second browser.
 - Hold expiry: the backend releases on TTL; the client auto-releases + toasts when a hold's `expiresAt` passes (2-min holds, `HOLDS_MS` in `queries.ts`). When a checkout starts, both sides extend to ~30 min (`checkoutHoldTTL` / `CHECKOUT_HOLD_MS`).
 - React-router uses `HashRouter` (hash-based routes) — no server-side routing config needed.
 - Dev proxy gotcha: `vite.config.ts` proxies `/movies`, `/sessions`, and `/admin` to :8080 — if you add a new backend path prefix in dev, add it to the proxy too (an unproxied prefix returns Vite's 404, not Go's).
-- Theming is hand-rolled CSS variables in `src/index.css` (`--bg`, `--surface`, `--accent`, `--held`, …). No Tailwind/shadcn.
+- Theming is Tailwind v4 + shadcn/ui (`src/components/ui/`), with hand-rolled CSS variables in `src/index.css` (`--bg`, `--surface`, `--accent`, `--held`, …) feeding Tailwind.
 - The `git status` convention: never commit unless the user explicitly asks.
 
 ## Open Items (current plan)
@@ -91,7 +92,7 @@ Staff accounts book seats for walk-in customers who pay at the counter — no Vi
   - `DELETE /admin/sessions/{sessionID}` — voids a booking (held or confirmed) so the seat is bookable again (customer backs out). Implemented as `AdminCancel` on every store.
 - `BookingStore` gained `AdminCancel` (all three stores) — unlike `Release` it has no ownership requirement and deletes confirmed bookings too.
 - `ListSeats` now also returns each seat's `session_id` so the staff UI can void confirmed seats.
-- Client: `SeatMap` detects staff mode via `useUser().publicMetadata.role === "admin"`. Staff see "Confirm (paid at counter)" instead of "Pay & Confirm" (calls `useAdminConfirm`, no Stripe redirect, success dialog shown immediately). Tapping a confirmed/booked seat as staff prompts `window.confirm` then voids it via `useAdminCancel`.
+- Client: `SeatMap` detects staff mode via `useUser().publicMetadata.role === "admin"`. Staff see "Confirm (paid at counter)" instead of "Pay & Confirm" (calls `useAdminConfirm`, no Stripe redirect, success dialog shown immediately). Tapping a confirmed/booked seat as staff opens a shadcn `Dialog` confirming the void (replaces an earlier `window.confirm`), then voids it via `useAdminCancel`.
 - Tests: `internal/booking/admin_test.go` covers direct confirm, unauthenticated reject, ownership enforcement (admin cannot confirm another user's hold), void confirmed, and 404 paths.
 
 Test: mark a Clerk user as admin in the dashboard, sign in as them, hold a seat and confirm — the seat flips straight to booked. `go test ./...` runs `internal/booking/admin_test.go`.
