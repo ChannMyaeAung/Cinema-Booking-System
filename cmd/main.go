@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/clerk/clerk-sdk-go/v2"
@@ -47,15 +48,15 @@ func main() {
 	catalog := booking.NewCatalog(movies)
 	mux.HandleFunc("GET /movies", listMovies(catalog))
 
-	// Serve the built React client at root, falling back to the legacy
-	// static UI when the client hasn't been built yet (pure dev mode).
+	// Serve the built React client at root. In dev, use the Vite server on
+	// :5173 instead (it proxies API calls here).
 	rootDir := "static/client/dist"
 	if _, err := os.Stat(filepath.Join(rootDir, "index.html")); err != nil {
-		rootDir = "static"
+		log.Printf("client not built (%s missing); run `pnpm build` in static/client or use the Vite dev server", rootDir)
 	}
 	mux.Handle("GET /", http.FileServer(http.Dir(rootDir)))
 
-	rdb, err := redis.NewClient("localhost:6379")
+	rdb, err := redis.NewClient(envOr("REDIS_ADDR", "localhost:6379"))
 	if err != nil {
 		log.Fatalf("redis: %v", err)
 	}
@@ -74,26 +75,45 @@ func main() {
 	mux.Handle("POST /admin/sessions/confirm", admin(http.HandlerFunc(bookingHandler.AdminConfirmSeats)))
 	mux.Handle("DELETE /admin/sessions/{sessionID}", admin(http.HandlerFunc(bookingHandler.AdminCancelSession)))
 
-	server := &http.Server{Addr: ":8080", Handler: mux}
+	server := &http.Server{
+		Addr:              ":" + envOr("PORT", "8080"),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	go func() {
-		log.Printf("listening on :8080")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt)
-	<-quit
+	// SIGTERM is what Docker/Kubernetes send on stop; SIGINT is Ctrl+C.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
 
 	log.Print("shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
 	}
+	if err := rdb.Close(); err != nil {
+		log.Printf("closing redis: %v", err)
+	}
+}
+
+// envOr returns the environment variable key, or fallback when it is unset.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // movies contains the sample catalog exposed by the API.

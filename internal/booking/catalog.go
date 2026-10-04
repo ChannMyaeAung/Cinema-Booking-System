@@ -43,3 +43,16 @@ const rowLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 func seatLabel(rowIndex, seatNumber int) string {
 	return string(rowLetters[rowIndex]) + strconv.Itoa(seatNumber)
 }
+
+// HasSeat reports whether seatID (e.g. "B7") exists in the movie's layout.
+func (m Movie) HasSeat(seatID string) bool {
+	if len(seatID) < 2 {
+		return false
+	}
+	row := int(seatID[0] - 'A')
+	n, err := strconv.Atoi(seatID[1:])
+	if err != nil || row < 0 || row >= m.Rows || n < 1 || n > m.SeatsPerRow {
+		return false
+	}
+	return seatLabel(row, n) == seatID // rejects non-canonical forms like "A01"
+}

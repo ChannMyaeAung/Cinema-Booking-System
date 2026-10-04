@@ -36,7 +36,7 @@ The core invariant is: **for a given movie and seat, only one booking can succee
 5. The service delegates the request to the configured store implementation.
 6. The store attempts to create a temporary hold for that seat.
 7. If the seat is already taken, the request fails with an already-booked error. If it's free, a temporary booking session is returned with a short TTL.
-8. To pay, the client posts the held session ids to `/sessions/checkout`, which creates a Stripe Checkout Session (one line item per seat) and redirects the user to Stripe. The hold TTL is extended to ~30 min so the reservation survives payment.
+8. To pay, the client posts the held session ids to `/sessions/checkout`, which creates a Stripe Checkout Session (one line item per seat) and redirects the user to Stripe. The Checkout page expires after 31 min and the hold is extended to 35 min, so the reservation always outlives the payment window.
 9. Stripe posts a `checkout.session.completed` webhook to `/stripe/webhook`; the handler verifies the `Stripe-Signature` header and confirms the seats. **Seats are confirmed only here** — the client never confirms and is never trusted to say "paid". Confirming an already-confirmed seat is a no-op (idempotent).
 10. The client detects the confirmed state via polling and shows the success screen.
 

@@ -52,7 +52,8 @@ func (f *FakeGateway) QueueEvent(ev WebhookEvent) {
 }
 
 // ParseWebhookEvent returns the next queued event, or decodes a payload shaped
-// like {"type": "...", "metadata": {"session_ids": "a,b", "user_id": "u"}}.
+// like {"type": "...", "payment_status": "paid", "metadata": {"session_ids":
+// "a,b", "user_id": "u"}}. Signatures are not checked.
 func (f *FakeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, signature string) (WebhookEvent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,13 +99,10 @@ func (f *FakeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, sig
 		paymentStatus = stripeEvent.PaymentStatus
 	}
 
-	ev := WebhookEvent{Type: stripeEvent.Type, UserID: userID, PaymentStatus: paymentStatus}
-	if sessionIDs != "" {
-		for _, s := range strings.Split(sessionIDs, ",") {
-			if s != "" {
-				ev.SessionIDs = append(ev.SessionIDs, s)
-			}
-		}
-	}
-	return ev, nil
+	return WebhookEvent{
+		Type:          stripeEvent.Type,
+		SessionIDs:    splitIDs(sessionIDs),
+		UserID:        userID,
+		PaymentStatus: paymentStatus,
+	}, nil
 }

@@ -209,3 +209,49 @@ func TestConcurrentStore_ListBookings(t *testing.T) {
 		t.Errorf("expected 1 booking for m2, got %d", len(listings))
 	}
 }
+
+// TestRedisStore_StaleSessionCannotClobberNewHold: once a hold lapses and
+// someone else holds the seat, the old session must not confirm, release or
+// void the new booking (e.g. a late payment webhook).
+func TestRedisStore_StaleSessionCannotClobberNewHold(t *testing.T) {
+	rdb, err := adapterredis.NewClient("localhost:6379")
+	if err != nil {
+		t.Skipf("redis not available, skipping: %v", err)
+	}
+	store := NewRedisStore(rdb)
+	ctx := context.Background()
+	movieID := "test-" + uuid.New().String()
+
+	old, err := store.Book(Booking{MovieID: movieID, SeatID: "A1", UserID: "alice"})
+	if err != nil {
+		t.Fatalf("book: %v", err)
+	}
+	// Simulate the seat key expiring while alice's reverse lookup survives,
+	// then bob taking the seat.
+	rdb.Del(ctx, seatKey(movieID, "A1"))
+	fresh, err := store.Book(Booking{MovieID: movieID, SeatID: "A1", UserID: "bob"})
+	if err != nil {
+		t.Fatalf("re-book: %v", err)
+	}
+	t.Cleanup(func() { rdb.Del(ctx, seatKey(movieID, "A1"), sessionKey(old.ID), sessionKey(fresh.ID)) })
+
+	if _, err := store.Confirm(ctx, old.ID, "alice"); err != ErrSessionNotFound {
+		t.Fatalf("stale confirm err = %v, want ErrSessionNotFound", err)
+	}
+	if err := store.AdminCancel(ctx, old.ID); err != ErrSessionNotFound {
+		t.Fatalf("stale void err = %v, want ErrSessionNotFound", err)
+	}
+
+	got, err := store.GetSession(ctx, fresh.ID, "bob")
+	if err != nil || got.Status != "held" {
+		t.Fatalf("bob's hold was disturbed: %+v, %v", got, err)
+	}
+
+	confirmed, err := store.Confirm(ctx, fresh.ID, "bob")
+	if err != nil || confirmed.Status != "confirmed" {
+		t.Fatalf("confirm bob: %+v, %v", confirmed, err)
+	}
+	if ttl := rdb.TTL(ctx, seatKey(movieID, "A1")).Val(); ttl != -1 {
+		t.Fatalf("confirmed seat should have no TTL, got %v", ttl)
+	}
+}

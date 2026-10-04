@@ -8,9 +8,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// ConcurrentStore is a mutex-guarded in-memory BookingStore used by tests.
+// Holds do not expire.
 type ConcurrentStore struct {
-	bookings map[string]Booking // key: seatID
-	sessions map[string]string  // key: sessionID -> seatID
+	bookings map[string]Booking // key: seatKey(movieID, seatID)
+	sessions map[string]string  // key: sessionID -> seat key
 	sync.RWMutex
 }
 
@@ -26,17 +28,18 @@ func (s *ConcurrentStore) Book(b Booking) (Booking, error) {
 	s.Lock()
 	defer s.Unlock()
 
-	if _, exists := s.bookings[b.SeatID]; exists {
+	key := seatKey(b.MovieID, b.SeatID)
+	if _, exists := s.bookings[key]; exists {
 		return Booking{}, ErrSeatAlreadyBooked
 	}
 
 	id := uuid.New().String()
 	b.ID = id
 	b.Status = "held"
-	b.ExpiresAt = time.Now().Add(2 * time.Minute)
+	b.ExpiresAt = time.Now().Add(defaultHoldTTL)
 
-	s.bookings[b.SeatID] = b
-	s.sessions[id] = b.SeatID
+	s.bookings[key] = b
+	s.sessions[id] = key
 
 	return b, nil
 }
@@ -60,12 +63,12 @@ func (s *ConcurrentStore) GetSession(ctx context.Context, sessionID string, user
 	s.RLock()
 	defer s.RUnlock()
 
-	seatID, exists := s.sessions[sessionID]
+	key, exists := s.sessions[sessionID]
 	if !exists {
 		return Booking{}, ErrSessionNotFound
 	}
 
-	b, exists := s.bookings[seatID]
+	b, exists := s.bookings[key]
 	if !exists {
 		return Booking{}, ErrSessionNotFound
 	}
@@ -82,12 +85,12 @@ func (s *ConcurrentStore) ExtendHold(ctx context.Context, sessionID string, user
 	s.Lock()
 	defer s.Unlock()
 
-	seatID, exists := s.sessions[sessionID]
+	key, exists := s.sessions[sessionID]
 	if !exists {
 		return ErrSessionNotFound
 	}
 
-	b, exists := s.bookings[seatID]
+	b, exists := s.bookings[key]
 	if !exists {
 		return ErrSessionNotFound
 	}
@@ -101,7 +104,7 @@ func (s *ConcurrentStore) ExtendHold(ctx context.Context, sessionID string, user
 	}
 
 	b.ExpiresAt = time.Now().Add(ttl)
-	s.bookings[seatID] = b
+	s.bookings[key] = b
 
 	return nil
 }
@@ -112,12 +115,12 @@ func (s *ConcurrentStore) Confirm(ctx context.Context, sessionID string, userID 
 	s.Lock()
 	defer s.Unlock()
 
-	seatID, exists := s.sessions[sessionID]
+	key, exists := s.sessions[sessionID]
 	if !exists {
 		return Booking{}, ErrSessionNotFound
 	}
 
-	b, exists := s.bookings[seatID]
+	b, exists := s.bookings[key]
 	if !exists {
 		return Booking{}, ErrSessionNotFound
 	}
@@ -131,7 +134,7 @@ func (s *ConcurrentStore) Confirm(ctx context.Context, sessionID string, userID 
 	}
 
 	b.Status = "confirmed"
-	s.bookings[seatID] = b
+	s.bookings[key] = b
 
 	return b, nil
 }
@@ -141,12 +144,12 @@ func (s *ConcurrentStore) Release(ctx context.Context, sessionID string, userID 
 	s.Lock()
 	defer s.Unlock()
 
-	seatID, exists := s.sessions[sessionID]
+	key, exists := s.sessions[sessionID]
 	if !exists {
 		return ErrSessionNotFound
 	}
 
-	b, exists := s.bookings[seatID]
+	b, exists := s.bookings[key]
 	if !exists {
 		return ErrSessionNotFound
 	}
@@ -160,7 +163,7 @@ func (s *ConcurrentStore) Release(ctx context.Context, sessionID string, userID 
 		return nil
 	}
 
-	delete(s.bookings, seatID)
+	delete(s.bookings, key)
 	delete(s.sessions, sessionID)
 
 	return nil
@@ -172,12 +175,12 @@ func (s *ConcurrentStore) AdminCancel(ctx context.Context, sessionID string) err
 	s.Lock()
 	defer s.Unlock()
 
-	seatID, exists := s.sessions[sessionID]
+	key, exists := s.sessions[sessionID]
 	if !exists {
 		return ErrSessionNotFound
 	}
 
-	delete(s.bookings, seatID)
+	delete(s.bookings, key)
 	delete(s.sessions, sessionID)
 
 	return nil

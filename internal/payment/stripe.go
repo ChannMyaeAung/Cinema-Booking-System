@@ -2,7 +2,6 @@ package payment
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -50,6 +49,10 @@ func (g *StripeGateway) CreateCheckoutSession(ctx context.Context, params Checko
 		},
 	}
 
+	if !params.ExpiresAt.IsZero() {
+		scParams.ExpiresAt = stripe.Int64(params.ExpiresAt.Unix())
+	}
+
 	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: g.secretKey}
 	sc, err := client.New(scParams)
 	if err != nil {
@@ -60,76 +63,35 @@ func (g *StripeGateway) CreateCheckoutSession(ctx context.Context, params Checko
 }
 
 // ParseWebhookEvent verifies the Stripe signature and returns a parsed event.
+// An unverifiable payload is rejected outright: falling back to trusting the
+// body would let anyone confirm seats by POSTing a fake event.
 func (g *StripeGateway) ParseWebhookEvent(ctx context.Context, payload []byte, signature string) (WebhookEvent, error) {
+	// The stripe-go SDK pins an older API version than the account/CLI may
+	// send; the signature check is what matters, so ignore the mismatch.
 	ev, err := webhook.ConstructEventWithOptions(payload, signature, g.webhookSecret, webhook.ConstructEventOptions{
 		IgnoreAPIVersionMismatch: true,
 	})
 	if err != nil {
-		// If ConstructEvent fails, try manual parsing as fallback
-		return g.manualParseWebhookEvent(payload)
+		return WebhookEvent{}, fmt.Errorf("verifying webhook signature: %w", err)
 	}
 
 	we := WebhookEvent{Type: string(ev.Type)}
-
-	if ev.Type == "checkout.session.completed" {
+	if strings.HasPrefix(we.Type, "checkout.session.") {
+		we.CheckoutID = ev.GetObjectValue("id")
 		we.UserID = ev.GetObjectValue("metadata", "user_id")
-		if ids := ev.GetObjectValue("metadata", "session_ids"); ids != "" {
-			for _, s := range strings.Split(ids, ",") {
-				if s != "" {
-					we.SessionIDs = append(we.SessionIDs, s)
-				}
-			}
-		}
+		we.SessionIDs = splitIDs(ev.GetObjectValue("metadata", "session_ids"))
 		we.PaymentStatus = ev.GetObjectValue("payment_status")
 	}
-
 	return we, nil
 }
 
-// manualParseWebhookEvent is a fallback that decodes a payload shaped like
-// either a full Stripe event envelope:
-//
-//	{"type":"checkout.session.completed","data":{"object":{"metadata":{...}}}}
-//
-// or a simplified test payload:
-//
-//	{"type":"checkout.session.completed","metadata":{...}}
-func (g *StripeGateway) manualParseWebhookEvent(payload []byte) (WebhookEvent, error) {
-	var raw struct {
-		Type string `json:"type"`
-		Data struct {
-			Object struct {
-				Metadata struct {
-					UserID     string `json:"user_id"`
-					SessionIDs string `json:"session_ids"`
-				} `json:"metadata"`
-				PaymentStatus string `json:"payment_status"`
-			} `json:"object"`
-		} `json:"data"`
-		Metadata struct {
-			UserID     string `json:"user_id"`
-			SessionIDs string `json:"session_ids"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return WebhookEvent{}, fmt.Errorf("decoding webhook payload: %w", err)
-	}
-
-	// Prefer metadata inside data.object (real Stripe event); fall back to
-	// top-level metadata (simplified test payloads).
-	userID := raw.Data.Object.Metadata.UserID
-	sessionIDs := raw.Data.Object.Metadata.SessionIDs
-	paymentStatus := raw.Data.Object.PaymentStatus
-	if userID == "" && sessionIDs == "" {
-		userID = raw.Metadata.UserID
-		sessionIDs = raw.Metadata.SessionIDs
-	}
-
-	ev := WebhookEvent{Type: raw.Type, UserID: userID, PaymentStatus: paymentStatus}
-	for _, s := range strings.Split(sessionIDs, ",") {
+// splitIDs parses the comma-joined session_ids checkout metadata.
+func splitIDs(joined string) []string {
+	var ids []string
+	for _, s := range strings.Split(joined, ",") {
 		if s != "" {
-			ev.SessionIDs = append(ev.SessionIDs, s)
+			ids = append(ids, s)
 		}
 	}
-	return ev, nil
+	return ids
 }

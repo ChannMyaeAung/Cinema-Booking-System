@@ -36,6 +36,16 @@ func (h *handler) HoldSeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	movie, ok := h.catalog.Get(movieID)
+	if !ok {
+		utils.WriteError(w, http.StatusNotFound, "movie not found")
+		return
+	}
+	if !movie.HasSeat(seatID) {
+		utils.WriteError(w, http.StatusNotFound, "seat not found")
+		return
+	}
+
 	data := Booking{
 		UserID:  userID,
 		SeatID:  seatID,
@@ -148,14 +158,11 @@ func (h *handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	for _, sessionID := range req.SessionIDs {
 		session, err := h.svc.GetSession(r.Context(), sessionID, userID)
 		if err != nil {
-			switch {
-			case errors.Is(err, ErrSessionNotFound):
-				utils.WriteError(w, http.StatusNotFound, err.Error())
-			case errors.Is(err, ErrUnauthorized):
-				utils.WriteError(w, http.StatusForbidden, err.Error())
-			default:
-				utils.WriteError(w, http.StatusInternalServerError, "failed to load session")
-			}
+			writeSessionError(w, err, "failed to load session")
+			return
+		}
+		if session.Status == "confirmed" {
+			utils.WriteError(w, http.StatusConflict, "seat "+session.SeatID+" is already paid for")
 			return
 		}
 
@@ -178,6 +185,7 @@ func (h *handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		LineItems:  lineItems,
 		SuccessURL: req.SuccessURL,
 		CancelURL:  req.CancelURL,
+		ExpiresAt:  time.Now().Add(checkoutSessionTTL),
 	})
 	if err != nil {
 		log.Printf("creating checkout for %v: %v", req.SessionIDs, err)
@@ -199,8 +207,9 @@ func (h *handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 }
 
 // StripeWebhook receives signature-verified Stripe events. Seats are confirmed
-// ONLY here — a checkout.session.completed event is the single trusted signal
-// that payment succeeded. Confirming an already-confirmed session is a no-op.
+// ONLY here — a paid checkout session is the single trusted signal that
+// payment succeeded. Confirming an already-confirmed session is a no-op, so
+// Stripe's retries are safe.
 func (h *handler) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -211,14 +220,41 @@ func (h *handler) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 
 	event, err := h.pay.ParseWebhookEvent(r.Context(), payload, signature)
 	if err != nil {
+		log.Printf("rejected webhook: %v", err)
 		utils.WriteError(w, http.StatusBadRequest, "invalid webhook signature")
 		return
 	}
 
-	if event.Type == "checkout.session.completed" {
+	switch event.Type {
+	case "checkout.session.completed", "checkout.session.async_payment_succeeded":
+		// Delayed payment methods complete as "unpaid" and settle later via
+		// async_payment_succeeded; only money actually received confirms.
+		if event.PaymentStatus != "paid" {
+			break
+		}
 		for _, sessionID := range event.SessionIDs {
-			if _, err := h.svc.ConfirmSeat(r.Context(), sessionID, event.UserID); err != nil {
+			_, err := h.svc.ConfirmSeat(r.Context(), sessionID, event.UserID)
+			switch {
+			case err == nil:
+			case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrUnauthorized):
+				// The hold lapsed before payment landed: the customer paid for
+				// a seat they no longer hold. Needs a refund.
+				log.Printf("PAID BUT NOT CONFIRMED: checkout %s session %s user %s: %v",
+					event.CheckoutID, sessionID, event.UserID, err)
+			default:
+				// Transient store failure: a non-2xx makes Stripe retry.
 				log.Printf("webhook confirm %s: %v", sessionID, err)
+				utils.WriteError(w, http.StatusInternalServerError, "failed to confirm seat")
+				return
+			}
+		}
+	case "checkout.session.expired", "checkout.session.async_payment_failed":
+		// Payment never happened; free the seats now instead of waiting for
+		// the hold TTL. Release is a no-op on confirmed bookings.
+		for _, sessionID := range event.SessionIDs {
+			if err := h.svc.ReleaseSeat(r.Context(), sessionID, event.UserID); err != nil &&
+				!errors.Is(err, ErrSessionNotFound) {
+				log.Printf("webhook release %s: %v", sessionID, err)
 			}
 		}
 	}
@@ -236,17 +272,8 @@ func (h *handler) ReleaseSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.svc.ReleaseSeat(r.Context(), sessionID, userID)
-	if err != nil {
-		if errors.Is(err, ErrSessionNotFound) {
-			utils.WriteError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		if errors.Is(err, ErrUnauthorized) {
-			utils.WriteError(w, http.StatusForbidden, err.Error())
-			return
-		}
-		utils.WriteError(w, http.StatusInternalServerError, "failed to release session")
+	if err := h.svc.ReleaseSeat(r.Context(), sessionID, userID); err != nil {
+		writeSessionError(w, err, "failed to release session")
 		return
 	}
 
@@ -291,14 +318,7 @@ func (h *handler) AdminConfirmSeats(w http.ResponseWriter, r *http.Request) {
 	for _, sessionID := range req.SessionIDs {
 		session, err := h.svc.ConfirmSeat(r.Context(), sessionID, userID)
 		if err != nil {
-			switch {
-			case errors.Is(err, ErrSessionNotFound):
-				utils.WriteError(w, http.StatusNotFound, err.Error())
-			case errors.Is(err, ErrUnauthorized):
-				utils.WriteError(w, http.StatusForbidden, err.Error())
-			default:
-				utils.WriteError(w, http.StatusInternalServerError, "failed to confirm seat")
-			}
+			writeSessionError(w, err, "failed to confirm seat")
 			return
 		}
 		confirmed = append(confirmed, adminConfirmedSeat{
@@ -322,13 +342,23 @@ func (h *handler) AdminCancelSession(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.PathValue("sessionID")
 	if err := h.svc.AdminCancelSeat(r.Context(), sessionID); err != nil {
-		if errors.Is(err, ErrSessionNotFound) {
-			utils.WriteError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		utils.WriteError(w, http.StatusInternalServerError, "failed to cancel booking")
+		writeSessionError(w, err, "failed to cancel booking")
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeSessionError maps store errors for a session lookup to HTTP statuses;
+// anything unexpected becomes a 500 with the generic fallback message.
+func writeSessionError(w http.ResponseWriter, err error, fallback string) {
+	switch {
+	case errors.Is(err, ErrSessionNotFound):
+		utils.WriteError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrUnauthorized):
+		utils.WriteError(w, http.StatusForbidden, err.Error())
+	default:
+		log.Printf("%s: %v", fallback, err)
+		utils.WriteError(w, http.StatusInternalServerError, fallback)
+	}
 }

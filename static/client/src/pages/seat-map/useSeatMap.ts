@@ -26,7 +26,8 @@ interface PendingCheckout {
   expiresAt: number;
 }
 
-const CHECKOUT_HOLD_MS = 30 * 60 * 1000;
+// Mirrors the backend's checkoutHoldTTL (redis_store.go).
+const CHECKOUT_HOLD_MS = 35 * 60 * 1000;
 const PENDING_CHECKOUT_KEY = "cinema.pendingCheckout";
 
 export function formatCountdown(ms: number): string {
@@ -93,15 +94,6 @@ export function useSeatMap(movieID: string): SeatMapState {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => {
-    if (confirmedSeats === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeDialog();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [confirmedSeats]);
-
   const holdsForMovie = useMemo(
     () => activeHolds.filter((h) => h.movieID === movieID),
     [activeHolds, movieID],
@@ -129,7 +121,7 @@ export function useSeatMap(movieID: string): SeatMapState {
           .catch(() => {});
       }
     }
-  }, [now, holdsForMovie, movieID, userID, removeHold, push, releaseMutation]);
+  }, [now, holdsForMovie, movieID, removeHold, push, releaseMutation]);
 
   function getState(seat: SeatInfo): SeatState {
     if (
